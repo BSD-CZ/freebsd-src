@@ -1,0 +1,119 @@
+name: Static analysis
+on:
+  push:
+    branches: [ main, stable/15, stable/14, stable/13 ]
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '**.c'
+      - '**.h'
+      - '**.cc'
+      - '**.cpp'
+      - '**.cxx'
+      - '**.hpp'
+  pull_request_target:
+    branches: [ main, stable/15, stable/14, stable/13  ]
+    types: [ opened, synchronize, reopened ]
+
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  security-events: write
+
+jobs:
+  cppcheck:
+    name: Cppcheck
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install cppcheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cppcheck
+
+      - name: Run cppcheck
+        run: |
+          cppcheck sys/amd64 sys/arm sys/arm64 sys/riscv \
+            -icontrib/ -icrypto/ -ietc/ -ignu/ -iinclude/ -ikerberos/ \
+            -ikrb5/ -ilibexec/ -itools/ -itarget/ -itests/ -icddl/ \
+            -istand/ -isecure/ -ishare/ -irescue/ -ibin/ -iusr.sbin/ \
+            -ilib/ -ietc/ -isbin/ -isys/dev/ -iboot/ -iboot/common/ -iboot/i386/ \
+            --enable=warning,performance,portability \
+            --inconclusive \
+            --platform=unix64 \
+            --std=c11 \
+            --suppress=missingIncludeSystem \
+            --suppress=unknownMacro \
+            --suppress=syntaxError \
+            --check-level=exhaustive \
+            --force \
+            -j $(nproc) \
+            --xml \
+            --output-file=report.xml .
+
+      - name: Convert cppcheck report to SARIF
+        uses: Flast/cppcheck-sarif@v2
+        with:
+          input: report.xml
+          output: report.sarif
+
+      - name: Upload cppcheck SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: report.sarif
+          category: cppcheck
+
+  clang-tidy-review:
+    name: clang-tidy-review
+    runs-on: ubuntu-latest
+    needs: cppcheck
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout PR code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: install packages (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update --quiet || true
+          sudo apt-get -yq --no-install-suggests --no-install-recommends install bear bmake libarchive-dev clang-18 lld-18
+
+      - name: Create Build Environment
+        run: |
+          echo "GITHUB_WORKSPACE = $GITHUB_WORKSPACE"
+          if [ -n "/usr/lib/llvm-18/bin" ]; then
+          echo "EXTRA_BUILD_ARGS=--cross-bindir=/usr/lib/llvm-18/bin" >> $GITHUB_ENV
+          fi
+          
+          mkdir -p ../build
+          echo "MAKEOBJDIRPREFIX=${PWD%/*}/build" >> $GITHUB_ENV
+          echo "NPROC=`getconf _NPROCESSORS_ONLN 2>/dev/null || getconf NPROCESSORS_ONLN 2>/dev/null || echo 1`" >> $GITHUB_ENV
+          bear -- ./tools/build/make.py $EXTRA_BUILD_ARGS TARGET=amd64 TARGET_ARCH=amd64 kernel-toolchain -n    
+          ls -l compile_commands.json
+      - name: Bootstrap bmake
+        run: ./tools/build/make.py --debug $EXTRA_BUILD_ARGS TARGET=amd64 TARGET_ARCH=amd64 -n
+      - name: make buildkernel
+        run: ./tools/build/make.py --debug $EXTRA_BUILD_ARGS TARGET=amd64 TARGET_ARCH=amd64 KERNCONF=GENERIC NO_MODULES=yes buildkernel -s -j$NPROC $EXTRA_MAKE_ARGS
+
+      - name: Run clang-tidy-review
+        uses: ZedThree/clang-tidy-review@v0.22.3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          pr: ${{ github.event.pull_request.number }}
+
+      - name: Upload review output
+        uses: ZedThree/clang-tidy-review/upload@v0.22.0
+        id: upload-review
