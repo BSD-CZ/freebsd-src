@@ -1,9 +1,13 @@
 name: Static analysis
+
 on:
   push:
     branches: [ main, stable/15, stable/14, stable/13 ]
-  pull_request:
-    branches: [ main ]
+  pull_request: 
+    branches: [ main, stable/15, stable/14, stable/13 ]
+  pull_request_target:
+    branches: [ main, stable/15, stable/14, stable/13 ]
+    types: [ opened, synchronize, reopened ]
     paths:
       - '**.c'
       - '**.h'
@@ -11,25 +15,25 @@ on:
       - '**.cpp'
       - '**.cxx'
       - '**.hpp'
-  pull_request_target:
-    branches: [ main, stable/15, stable/14, stable/13  ]
-    types: [ opened, synchronize, reopened ]
-
 
 permissions:
   contents: read
   pull-requests: write
   issues: write
   security-events: write
+  checks: write
+  statuses: write
 
 jobs:
   cppcheck:
     name: Cppcheck
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
 
       - name: Install cppcheck
         run: |
@@ -68,29 +72,30 @@ jobs:
           sarif_file: report.sarif
           category: cppcheck
 
-  clang-tidy-review:
+  cpp-linter-review:
     name: clang-tidy-review
     runs-on: ubuntu-latest
     needs: cppcheck
-    permissions:
-      contents: read
-      pull-requests: write
-      checks: write
-      statuses: write
-
     steps:
-    - uses: actions/checkout@v5
-    - uses: cpp-linter/cpp-linter-action@v2
-      id: linter
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        thread-comments: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && 'true' || 'false' }}
-        file-annotations: true
-        style: ""
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
 
-    - name: Fail fast if issues found
-      if: steps.linter.outputs.checks-failed > 0
-      run: |
-        echo "Linter nalezl chyby! Počet: ${{ steps.linter.outputs.checks-failed }}"
-        exit 1
+      - name: Run C++ Linter
+        uses: cpp-linter/cpp-linter-action@v2
+        id: linter
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          thread-comments: ${{ github.event_name == 'pull_request_target' && 'true' || 'false' }}
+          file-annotations: true
+          extensions: "c,h,cpp,hpp,cc,cxx"
+          tidy-review: ${{ github.event_name == 'pull_request_target' && 'true' || 'false' }}
+
+      - name: Fail fast if issues found
+        if: steps.linter.outputs.checks-failed > 0
+        run: |
+          echo "Linter nalezl chyby! Počet: ${{ steps.linter.outputs.checks-failed }}"
+          exit 1
