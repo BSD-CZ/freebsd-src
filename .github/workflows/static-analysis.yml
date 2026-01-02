@@ -89,11 +89,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          thread-comments: ${{ github.event_name == 'pull_request_target' && 'true' || 'false' }}
+          thread-comments: ${{ (github.event_name == 'pull_request_target' && 'true' || 'false') || (github.event_name == 'pull_request' && 'true' || 'false')  }}
           file-annotations: true
           extensions: "c,h,cpp,hpp,cc,cxx"
-          tidy-review: ${{ github.event_name == 'pull_request_target' && 'true' || 'false' }}
-
+          tidy-review: ${{ (github.event_name == 'pull_request_target' && 'true' || 'false') || (github.event_name == 'pull_request' && 'true' || 'false') }}
+          style: ''
       - name: Fail fast if issues found
         if: steps.linter.outputs.checks-failed > 0
         run: |
