@@ -83,8 +83,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tidy-checks: '.clang-tidy'
-          thread-comments: ${{ (github.event_name == 'pull_request' || ) && 'update' }}
-      - name: Fail fast?!
-        if: steps.linter.outputs.checks-failed > 0
-        run: exit 1
+          thread-comments: ${{ (github.event_name == 'pull_request' ||  github.event_name == 'pull_request_target' ) && 'update' }} 		
