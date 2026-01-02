@@ -79,11 +79,18 @@ jobs:
       statuses: write
 
     steps:
-        - uses: actions/checkout@v5
-        - uses: cpp-linter/cpp-linter-action@v2
-          id: linter
-          env:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          with:
-            thread-comments: ${{ (github.event_name == 'pull_request' ||  github.event_name == 'pull_request_target' ) && 'update' }}
-            style: ""
+    - uses: actions/checkout@v5
+    - uses: cpp-linter/cpp-linter-action@v2
+      id: linter
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        thread-comments: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && 'true' || 'false' }}
+        file-annotations: true
+        style: ""
+
+    - name: Fail fast if issues found
+      if: steps.linter.outputs.checks-failed > 0
+      run: |
+        echo "Linter nalezl chyby! Počet: ${{ steps.linter.outputs.checks-failed }}"
+        exit 1
