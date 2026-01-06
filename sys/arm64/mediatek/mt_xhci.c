@@ -63,6 +63,7 @@
 #include <dev/usb/controller/xhci.h>
 #include <dev/usb/controller/xhcireg.h>
 #include "usbdevs.h"
+#include "mt7622_tphy.h"
 
 #define MTXHCI_MAX_PORTS	4
 
@@ -168,13 +169,13 @@ mt_xhci_attach(device_t dev)
     struct xhci_softc *xsc;
     int ntries, i, rv, rid;
     uint32_t mask, val;
-    //phandle_t node;
+    phandle_t node;
 
     sc = device_get_softc(dev);
     sc->dev = dev;
     sc->soc = (struct xhci_soc *)ofw_bus_search_compatible(dev,
                                                            compat_data)->ocd_data;
-    //node = ofw_bus_get_node(dev);
+    node = ofw_bus_get_node(dev);
     xsc = &sc->xhci_softc;
     LOCK_INIT(sc);
 
@@ -271,24 +272,35 @@ mt_xhci_attach(device_t dev)
                             "Too many phys present in DT.\n");
               return (EOVERFLOW);
           }
-          rv = phy_get_by_ofw_name(sc->dev, 0, sc->soc->phy_names[i],
+          rv = phy_get_by_ofw_idx(sc->dev, node, i,
                                    sc->phys + i);
           if (rv != 0 && rv != ENOENT) {
               device_printf(sc->dev, "Cannot get '%s' phy.\n",
                             sc->soc->phy_names[i]);
               return (ENXIO);
           }
+          if(rv == ENOENT) {
+              device_printf(sc->dev, "Cannot get '%s' phy (ENOENT).\n",
+                            sc->soc->phy_names[i]);
+              return (ENOENT);
+          }
     }
 
-    for (i = 0; sc->soc->phy_names[i] != NULL; i++) {
-        if (sc->phys[i] == NULL)
+    for (i = 0; i < nitems(sc->phys); i++) {
+        if (sc->phys[i] == NULL) {
+            device_printf(sc->dev, "This is '%s' phy\n",
+                          sc->soc->phy_names[i]);
             continue;
+        }
+
         rv = phy_enable(sc->phys[i]);
         if (rv != 0) {
             device_printf(sc->dev, "Cannot enable '%s' phy\n",
                           sc->soc->phy_names[i]);
             return (rv);
         }
+        device_printf(sc->dev, "Enable '%s' phy\n",
+                      sc->soc->phy_names[i]);
     }
 
 
