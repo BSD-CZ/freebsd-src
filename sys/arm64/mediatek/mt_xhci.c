@@ -267,7 +267,7 @@ mt_xhci_attach(device_t dev)
 
     /* Enable PHYs */
     for (i = 0; sc->soc->phy_names[i] != NULL; i++) {
-        if (sc->phys[i] == NULL) {
+        if (sc->soc->phy_names[i] == NULL) {
             continue;
         }
         if (i >= nitems(sc->phys)) {
