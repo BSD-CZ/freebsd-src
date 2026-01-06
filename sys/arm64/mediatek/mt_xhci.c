@@ -267,7 +267,7 @@ mt_xhci_attach(device_t dev)
 
     /* Enable PHYs */
     for (i = 0; i < nitems(sc->phys); i++) {
-        rv = phy_get_by_ofw_idx(sc->dev, i, &sc->phys[i]);
+        rv = phy_get_by_ofw_idx(sc->dev, node,  i, &sc->phys[i]);
         if (rv != 0)
             break;   /* žádná další PHY */
 
