@@ -114,7 +114,7 @@ struct mt_xhci_softc {
     clk_t clk_xusb_ref_ck;
     clk_t clk_xusb_mcu_ck;
     clk_t clk_xusb_dma_ck;
-    phy_t phys[8];
+    phy_t phys[3];
     regulator_t	regulators[16];
     struct intr_config_hook	irq_hook;
     bool xhci_inited;
@@ -278,21 +278,20 @@ mt_xhci_attach(device_t dev)
     }
 
     for (i = 0; i < nitems(sc->phys); i++) {
-        if (sc->phys[i] == NULL) {
-            device_printf(sc->dev, "Is NULL'%s' phy\n",
-                          sc->soc->phy_names[i]);
+        if (sc->phys[i] == NULL)
             continue;
-        }
-
         rv = phy_enable(sc->phys[i]);
         if (rv != 0) {
             device_printf(sc->dev, "Cannot enable '%s' phy\n",
                           sc->soc->phy_names[i]);
             return (rv);
         }
+
         device_printf(sc->dev, "Enable '%s' phy\n",
                       sc->soc->phy_names[i]);
+
     }
+
 
 
     /* Allocate resources. */
