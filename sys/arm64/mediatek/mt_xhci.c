@@ -266,24 +266,12 @@ mt_xhci_attach(device_t dev)
     }
 
     /* Enable PHYs */
-    for (i = 0; sc->soc->phy_names[i] != NULL; i++) {
-          if (i >= nitems(sc->phys)) {
-              device_printf(sc->dev,
-                            "Too many phys present in DT.\n");
-              return (EOVERFLOW);
-          }
-          rv = phy_get_by_ofw_idx(sc->dev, node, 0,
-                                  &sc->phys[i]);
-          if (rv != 0 && rv != ENOENT) {
-              device_printf(sc->dev, "Cannot get '%s' phy.\n",
-                            sc->soc->phy_names[i]);
-              return (ENXIO);
-          }
-          if(rv == ENOENT) {
-              device_printf(sc->dev, "Cannot get '%s' phy (ENOENT).\n",
-                            sc->soc->phy_names[i]);
-              return (ENOENT);
-          }
+    for (i = 0; i < nitems(sc->phys); i++) {
+        rv = phy_get_by_ofw_idx(sc->dev, i, &sc->phys[i]);
+        if (rv != 0)
+            break;   /* žádná další PHY */
+
+        device_printf(sc->dev, "Found PHY index %d\n", i);
     }
 
     for (i = 0; i < nitems(sc->phys); i++) {
