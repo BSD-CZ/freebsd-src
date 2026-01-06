@@ -266,20 +266,23 @@ mt_xhci_attach(device_t dev)
     }
 
     /* Enable PHYs */
-    for (i = 0; sc->soc->phy_names[i] != NULL; i++) {
-        if (sc->soc->phy_names[i] == NULL) {
-            continue;
-        }
+    for (i = 0; nitems(sc->phys); i++) {
         if (i >= nitems(sc->phys)) {
             device_printf(sc->dev,
                           "Too many phys present in DT.\n");
             return (EOVERFLOW);
         }
-        rv = phy_get_by_ofw_idx(sc->dev, node, i, &sc->phys[i]);
-        if (rv != 0)
-            break;   /* žádná další PHY */
+        if (sc->phys[i] == NULL) {
+            continue;
+        }
 
-        device_printf(sc->dev, "Found PHY index %d\n", i);
+        rv = phy_get_by_ofw_idx(sc->dev, node, i, &sc->phys[i]);
+        if (rv != 0) {
+            break;
+        }
+
+        device_printf(sc->dev, "This is '%s' phy\n",
+                      sc->soc->phy_names[i]);
     }
 
     for (i = 0; i < nitems(sc->phys); i++) {
