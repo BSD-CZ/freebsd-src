@@ -266,28 +266,20 @@ mt_xhci_attach(device_t dev)
     }
 
     /* Enable PHYs */
-    for (i = 0; sc->soc->phy_names[i]; i++) {
+    for (i = 0; phy_get_by_ofw_idx(sc->dev, node, i, &sc->phys[i]) == 0; i++) {
         if (i >= nitems(sc->phys)) {
             device_printf(sc->dev,
                           "Too many phys present in DT.\n");
             return (EOVERFLOW);
         }
-        if (sc->phys[i] == NULL) {
-            continue;
-        }
 
-        rv = phy_get_by_ofw_idx(sc->dev, node, i, &sc->phys[i]);
-        if (rv != 0) {
-            break;
-        }
-
-        device_printf(sc->dev, "This is '%s' phy\n",
+        device_printf(sc->dev, "Found '%s' phy\n",
                       sc->soc->phy_names[i]);
     }
 
     for (i = 0; i < nitems(sc->phys); i++) {
         if (sc->phys[i] == NULL) {
-            device_printf(sc->dev, "This is '%s' phy\n",
+            device_printf(sc->dev, "Is NULL'%s' phy\n",
                           sc->soc->phy_names[i]);
             continue;
         }
