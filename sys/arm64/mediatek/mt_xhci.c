@@ -266,7 +266,7 @@ mt_xhci_attach(device_t dev)
     }
 
     /* Enable PHYs */
-    for (i = 0; phy_get_by_ofw_idx(sc->dev, 0, 0, &sc->phys[i]) == 0; i++) {
+    for (i = 0; phy_get_by_ofw_idx(sc->dev, node, 0, &sc->phys[i]) == 0; i++) {
         if (i >= nitems(sc->phys)) {
             device_printf(sc->dev,
                           "Too many phys present in DT.\n");
