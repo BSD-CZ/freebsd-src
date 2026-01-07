@@ -115,7 +115,6 @@ struct mt_xhci_softc {
     clk_t clk_xusb_mcu_ck;
     clk_t clk_xusb_dma_ck;
     phy_t phys[8];
-    uint32_t nphys;
     regulator_t	regulators[16];
     struct intr_config_hook	irq_hook;
     bool xhci_inited;
@@ -178,7 +177,6 @@ mt_xhci_attach(device_t dev)
                                                            compat_data)->ocd_data;
     node = ofw_bus_get_node(dev);
     xsc = &sc->xhci_softc;
-    sc->nphys = 0;
 
     LOCK_INIT(sc);
 
@@ -285,7 +283,7 @@ mt_xhci_attach(device_t dev)
 
             device_printf(sc->dev, "Cannot get '%s' phy.\n",
                           sc->soc->phy_names[i]);
-            return (ENXIO);
+            return (rv);
         }
     }
 
