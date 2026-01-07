@@ -279,7 +279,7 @@ mt_xhci_attach(device_t dev)
 
         device_printf(sc->dev, "Working with index '%d'\n", i);
 
-        rv = phy_get_by_ofw_idx(sc->dev, node, i,
+        rv = phy_get_by_ofw_idx(sc->dev, node, 0,
                                  sc->phys + i);
         if (rv != 0) {
             device_printf(sc->dev, "Cannot get '%s' phy.\n",
