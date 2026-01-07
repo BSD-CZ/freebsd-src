@@ -281,8 +281,8 @@ mt_xhci_attach(device_t dev)
         rv = phy_get_by_ofw_idx(sc->dev, node, i, sc->phys + i);
         if (rv != 0) {
 
-            device_printf(sc->dev, "Cannot get '%s' phy.\n",
-                          sc->soc->phy_names[i]);
+            device_printf(sc->dev, "Cannot get '%s' phy, error: %d.\n",
+                          sc->soc->phy_names[i], rv);
             return (rv);
         }
     }
