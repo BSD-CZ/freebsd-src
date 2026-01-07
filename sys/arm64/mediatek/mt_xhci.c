@@ -272,13 +272,13 @@ mt_xhci_attach(device_t dev)
                           "Too many phys present in DT.\n");
             return (EOVERFLOW);
         }
-        rv = phy_get_by_ofw_idx(sc->dev, sc->node, i, &(sc->phy[i]));
+        rv = phy_get_by_ofw_idx(sc->dev, sc->node, i, &(sc->phys[i]));
         if (rv != 0) {
             device_printf(sc->dev, "Cannot get '%s' phy.\n",
                           sc->soc->phy_names[i]);
             return (ENXIO);
         }
-        
+
         device_printf(sc->dev, "Found '%s' phy\n",
                       sc->soc->phy_names[i]);
     }
