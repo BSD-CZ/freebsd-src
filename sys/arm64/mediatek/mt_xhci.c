@@ -270,21 +270,21 @@ mt_xhci_attach(device_t dev)
     }
 
     /* Phys. */
-    rv = phy_get_by_ofw_idx(sc->dev, node, 0, &(sc->phys));
+    rv = phy_get_by_ofw_idx(sc->dev, node, 0, sc->phys);
     if (rv != 0) {
         device_printf(sc->dev, "Cannot get '%s' phy.\n",
                       sc->soc->phy_names[i]);
         return (ENXIO);
     }
 
-    rv = phy_get_by_ofw_idx(sc->dev, node, 1, &(sc->phys + 1));
+    rv = phy_get_by_ofw_idx(sc->dev, node, 1, sc->phys + 1);
     if (rv != 0) {
         device_printf(sc->dev, "Cannot get '%s' phy.\n",
                       sc->soc->phy_names[i]);
         return (ENXIO);
     }
 
-    rv = phy_get_by_ofw_idx(sc->dev, node, 2, &(sc->phys + 2));
+    rv = phy_get_by_ofw_idx(sc->dev, node, 2, sc->phys + 2);
     if (rv != 0) {
         device_printf(sc->dev, "Cannot get '%s' phy.\n",
                       sc->soc->phy_names[i]);
