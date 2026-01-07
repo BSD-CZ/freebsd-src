@@ -270,38 +270,24 @@ mt_xhci_attach(device_t dev)
     }
 
     /* Phys. */
-    rv = phy_get_by_ofw_idx(sc->dev, node, 0, &sc->phys[0]);
-    if (rv != 0) {
-        device_printf(sc->dev, "Cannot get '%s' phy.\n",
-                      sc->soc->phy_names[i]);
-        return (ENXIO);
-    }
+    for (i = 0; sc->soc->phy_names[i] != NULL; i++) {
+        if (i >= nitems(sc->phys)) {
+            device_printf(sc->dev,
+                          "Too many phys present in DT.\n");
+            return (EOVERFLOW);
+        }
 
-    rv = phy_get_by_ofw_idx(sc->dev, node, 0, &sc->phys[1]);
-    if (rv != 0) {
-        device_printf(sc->dev, "Cannot get '%s' phy.\n",
-                      sc->soc->phy_names[i]);
-        return (ENXIO);
-    }
+        device_printf(sc->dev, "Working with index '%d'\n", i);
 
-    rv = phy_get_by_ofw_idx(sc->dev, node, 0, &sc->phys[2]);
-    if (rv != 0) {
-        device_printf(sc->dev, "Cannot get '%s' phy.\n",
-                      sc->soc->phy_names[i]);
-        return (ENXIO);
-    }
-
-    for (i = 0; i < nitems(sc->phys); i++) {
-        if (sc->phys[i] == NULL)
-            continue;
-
-        rv = phy_enable(sc->phys[i]);
+        rv = phy_get_by_ofw_idx(sc->dev, node, i,
+                                 sc->phys + i);
         if (rv != 0) {
-            device_printf(sc->dev, "Cannot enable '%s' phy\n",
+            device_printf(sc->dev, "Cannot get '%s' phy.\n",
                           sc->soc->phy_names[i]);
-            return (rv);
+            return (ENXIO);
         }
     }
+
 
     /* Allocate resources. */
     rid = 0;
