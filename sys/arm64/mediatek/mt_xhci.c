@@ -115,6 +115,7 @@ struct mt_xhci_softc {
     clk_t clk_xusb_mcu_ck;
     clk_t clk_xusb_dma_ck;
     phy_t phys[3];
+    uint32_t nphys;
     regulator_t	regulators[16];
     struct intr_config_hook	irq_hook;
     bool xhci_inited;
@@ -177,6 +178,8 @@ mt_xhci_attach(device_t dev)
                                                            compat_data)->ocd_data;
     node = ofw_bus_get_node(dev);
     xsc = &sc->xhci_softc;
+    sc->nphys = 0;
+
     LOCK_INIT(sc);
 
     rv = clk_get_by_ofw_name(sc->dev, 0, "sys_ck",
@@ -274,6 +277,10 @@ mt_xhci_attach(device_t dev)
         }
         rv = phy_get_by_ofw_idx(sc->dev, node, i, &(sc->phys[i]));
         if (rv != 0) {
+            if (rv == ENOENT || rv == ENODEV) {
+                break;
+            }
+
             device_printf(sc->dev, "Cannot get '%s' phy.\n",
                           sc->soc->phy_names[i]);
             return (ENXIO);
@@ -281,22 +288,17 @@ mt_xhci_attach(device_t dev)
 
         device_printf(sc->dev, "Found '%s' phy\n",
                       sc->soc->phy_names[i]);
-    }
 
-    for (i = 0; i < nitems(sc->phys); i++) {
-        if (sc->phys[i] == NULL)
-            continue;
-        rv = phy_enable(sc->phys[i]);
+        rv = phy_enable(phy);
         if (rv != 0) {
-            device_printf(sc->dev, "Cannot enable '%s' phy\n",
-                          sc->soc->phy_names[i]);
+            device_printf(dev,
+                          "phy_enable(%d) failed: %d\n", i, rv);
             return (rv);
         }
 
-        device_printf(sc->dev, "Enable '%s' phy\n",
-                      sc->soc->phy_names[i]);
-
+        device_printf(dev, "Enabled PHY[%d]\n", i);
     }
+
 
     /* Allocate resources. */
     rid = 0;
