@@ -253,7 +253,7 @@ mt_xhci_attach(device_t dev)
             device_printf(sc->dev,
                           "Cannot get '%s' regulator\n",
                           sc->soc->regulator_names[i]);
-            return (ENXIO);
+            continue;
         }
     }
 
