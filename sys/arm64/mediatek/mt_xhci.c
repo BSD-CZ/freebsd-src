@@ -277,9 +277,10 @@ mt_xhci_attach(device_t dev)
             return (EOVERFLOW);
         }
 
-        device_printf(sc->dev, "Working with index '%d'\n", i);
+        device_printf(sc->dev, "Requesting PHY index %d: %s\n",
+                      i, sc->soc->phy_names[i]);
 
-        rv = phy_get_by_ofw_idx(sc->dev, node, 0, sc->phys + i);
+        rv = phy_get_by_ofw_idx(sc->dev, node, i, sc->phys + i);
         if (rv != 0) {
 
             device_printf(sc->dev, "Cannot get '%s' phy.\n",
