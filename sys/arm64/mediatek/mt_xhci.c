@@ -282,6 +282,11 @@ mt_xhci_attach(device_t dev)
         rv = phy_get_by_ofw_idx(sc->dev, node, 0,
                                  &(sc->phys[i]));
         if (rv != 0) {
+
+            if (rv == ENOENT) {
+                continue;
+            }
+
             device_printf(sc->dev, "Cannot get '%s' phy.\n",
                           sc->soc->phy_names[i]);
             return (ENXIO);
