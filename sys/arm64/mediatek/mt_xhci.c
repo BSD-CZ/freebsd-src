@@ -270,7 +270,7 @@ mt_xhci_attach(device_t dev)
     }
 
     /* Phys. */
-    for (i = 0; nitems(sc->phys); i++) {
+    for (i = 0; sc->soc->phy_names[i] != NULL; i++) {
         if (i >= nitems(sc->phys)) {
             device_printf(sc->dev,
                           "Too many phys present in DT.\n");
@@ -279,8 +279,7 @@ mt_xhci_attach(device_t dev)
 
         device_printf(sc->dev, "Working with index '%d'\n", i);
 
-        rv = phy_get_by_ofw_idx(sc->dev, node, i,
-                                 &(sc->phys[i]));
+        rv = phy_get_by_ofw_idx(sc->dev, node, i, sc->phys + i);
         if (rv != 0) {
 
             if (rv == ENOENT) {
