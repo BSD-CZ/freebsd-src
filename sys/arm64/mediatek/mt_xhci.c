@@ -289,7 +289,7 @@ mt_xhci_attach(device_t dev)
         device_printf(sc->dev, "Found '%s' phy\n",
                       sc->soc->phy_names[i]);
 
-        rv = phy_enable(phy);
+        rv = phy_enable(sc->phys[i]);
         if (rv != 0) {
             device_printf(dev,
                           "phy_enable(%d) failed: %d\n", i, rv);
