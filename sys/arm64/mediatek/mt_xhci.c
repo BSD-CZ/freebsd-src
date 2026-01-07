@@ -246,8 +246,9 @@ mt_xhci_attach(device_t dev)
                           "Too many regulators present in DT.\n");
             return (EOVERFLOW);
         }
-        rv = regulator_get_by_ofw_property(sc->dev, 0,
-                                           sc->soc->regulator_names[i], sc->regulators + i);
+        rv = regulator_get_by_name(sc->dev, 0,
+                                   sc->soc->regulator_names[i],
+                                   sc->regulators + i);
         if (rv != 0) {
             device_printf(sc->dev,
                           "Cannot get '%s' regulator\n",
@@ -270,6 +271,8 @@ mt_xhci_attach(device_t dev)
 
     /* Enable PHYs */
     for (i = 0; sc->soc->phy_names[i] != NULL; i++) {
+        device_printf(sc->dev,
+                      "Work with index: %d\n", i);
         if (i >= nitems(sc->phys)) {
             device_printf(sc->dev,
                           "Too many phys present in DT.\n");
