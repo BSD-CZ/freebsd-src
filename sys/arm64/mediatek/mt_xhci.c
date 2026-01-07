@@ -246,7 +246,7 @@ mt_xhci_attach(device_t dev)
                           "Too many regulators present in DT.\n");
             return (EOVERFLOW);
         }
-        rv = regulator_get_by_name(sc->dev, 0,
+        rv = regulator_get_by_name(sc->dev,
                                    sc->soc->regulator_names[i],
                                    sc->regulators + i);
         if (rv != 0) {
