@@ -44,9 +44,24 @@
 
 _Static_assert(LINUX_IFNAMSIZ == IFNAMSIZ, "Linux IFNAMSIZ");
 
-static bool use_real_ifnames = false;
-SYSCTL_BOOL(_compat_linux, OID_AUTO, use_real_ifnames, CTLFLAG_RWTUN,
-    &use_real_ifnames, 0,
+static bool use_real_ifnames = true;
+static int
+sysctl_linux_use_real_ifnames(SYSCTL_HANDLER_ARGS)
+{
+	int error;
+
+	error = sysctl_handle_bool(oidp, &use_real_ifnames, arg2, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+	if (!use_real_ifnames)
+		gone_in(17, "linux(4): %s: conversion of native interface "
+		    "names to ethN is not needed to emulate modern Linux. "
+		    "See https://systemd.io/PREDICTABLE_INTERFACE_NAMES. ",
+		    oidp->oid_name);
+	return (0);
+}
+SYSCTL_PROC(_compat_linux, OID_AUTO, use_real_ifnames,
+    CTLTYPE_U8 | CTLFLAG_RWTUN, 0, 0, sysctl_linux_use_real_ifnames, "CU",
     "Use FreeBSD interface names instead of generating ethN aliases");
 
 VNET_DEFINE_STATIC(struct unrhdr *, linux_eth_unr);
@@ -105,12 +120,13 @@ static void
 linux_ifnet_vnet_uninit(void *arg __unused)
 {
 	/*
-	 * At a normal vnet shutdown all interfaces are gone at this point.
-	 * But when we kldunload linux.ko, the vnet_deregister_sysuninit()
-	 * would call this function for the default vnet.
+	 * All cloned interfaces are already gone at this point, as well
+	 * as interfaces that were if_vmove'd into this vnet.  However,
+	 * if a jail has created IFT_ETHER interfaces in self, or has had
+	 * physical Ethernet drivers attached in self, than we may have
+	 * allocated entries in the unr(9), so clear it to avoid KASSERT.
 	 */
-	if (IS_DEFAULT_VNET(curvnet))
-		clear_unrhdr(V_linux_eth_unr);
+	clear_unrhdr(V_linux_eth_unr);
 	delete_unrhdr(V_linux_eth_unr);
 }
 VNET_SYSUNINIT(linux_ifnet_vnet_uninit, SI_SUB_PROTO_IF, SI_ORDER_ANY,

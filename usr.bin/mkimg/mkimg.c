@@ -1,4 +1,6 @@
 /*-
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
  * Copyright (c) 2013,2014 Juniper Networks, Inc.
  * All rights reserved.
  *
@@ -152,15 +154,18 @@ usage(const char *why)
 	fprintf(stderr, "\t--formats\t-  list image formats\n");
 	fprintf(stderr, "\t--schemes\t-  list partition schemes\n");
 	fprintf(stderr, "\t--version\t-  show version information\n");
+	fprintf(stderr, "\t--capacity\t-  minimum and maximum capacity (in bytes)\n");
 	fputc('\n', stderr);
 	fprintf(stderr, "\t-a <num>\t-  mark num'th partition as active\n");
 	fprintf(stderr, "\t-b <file>\t-  file containing boot code\n");
 	fprintf(stderr, "\t-c <num>\t-  minimum capacity (in bytes) of the disk\n");
 	fprintf(stderr, "\t-C <num>\t-  maximum capacity (in bytes) of the disk\n");
 	fprintf(stderr, "\t-f <format>\n");
+	fprintf(stderr, "\t-h\t\t-  show this usage information\n");
 	fprintf(stderr, "\t-o <file>\t-  file to write image into\n");
 	fprintf(stderr, "\t-p <partition>\n");
 	fprintf(stderr, "\t-s <scheme>\n");
+	fprintf(stderr, "\t-t <num>\t-  set timestamp (seconds since epoch)\n");
 	fprintf(stderr, "\t-v\t\t-  increase verbosity\n");
 	fprintf(stderr, "\t-y\t\t-  [developers] enable unit test\n");
 	fprintf(stderr, "\t-H <num>\t-  number of heads to simulate\n");
@@ -243,7 +248,8 @@ static int
 parse_part(const char *spec)
 {
 	struct part *part;
-	char *sep;
+	const char *sep;
+	char *asep;
 	size_t len;
 	int error;
 
@@ -296,15 +302,14 @@ parse_part(const char *spec)
 		goto errout;
 	}
 
-	spec = part->alias;
-	sep = strchr(spec, '/');
-	if (sep != NULL) {
-		*sep++ = '\0';
-		if (strlen(part->alias) == 0 || strlen(sep) == 0) {
+	asep = strchr(part->alias, '/');
+	if (asep != NULL) {
+		*asep++ = '\0';
+		if (strlen(part->alias) == 0 || strlen(asep) == 0) {
 			error = EINVAL;
 			goto errout;
 		}
-		part->label = strdup(sep);
+		part->label = strdup(asep);
 		if (part->label == NULL) {
 			error = ENOMEM;
 			goto errout;
@@ -441,6 +446,8 @@ mkimg(void)
 {
 	FILE *fp;
 	struct part *part;
+	struct stat sb;
+	char *p;
 	lba_t block, blkoffset;
 	uint64_t bytesize, byteoffset;
 	char *size, *offset;
@@ -463,12 +470,28 @@ mkimg(void)
 		/* Look for an offset. Set size too if we can. */
 		switch (part->kind) {
 		case PART_KIND_SIZE:
-		case PART_KIND_FILE:
 			offset = part->contents;
 			size = strsep(&offset, ":");
-			if (part->kind == PART_KIND_SIZE &&
-			    expand_number(size, &bytesize) == -1)
+			if (expand_number(size, &bytesize) == -1)
 				error = errno;
+			break;
+		case PART_KIND_FILE:
+			size = part->contents;
+			if (stat(part->contents, &sb) == 0) {
+				if (S_ISDIR(sb.st_mode)) {
+					errc(EX_IOERR, EISDIR, "partition %d",
+					    part->index + 1);
+				}
+				offset = NULL;
+			} else {
+				p = strrchr(part->contents, ':');
+				if (p != NULL) {
+					*p = '\0';
+					offset = p + 1;
+				} else {
+					offset = NULL;
+				}
+			}
 			if (offset != NULL) {
 				if (*offset != '+')
 					abs_offset = true;

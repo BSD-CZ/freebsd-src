@@ -13,7 +13,7 @@
 .include "${KRB5_SRCTOP}/Makefile.pc"
 
 LIB=		kadm5clnt_mit
-LDFLAGS=	-Wl,--no-undefined
+LDFLAGS+=	-Wl,--no-undefined
 LIBADD=		krb5profile gssrpc gssapi_krb5 krb5 k5crypto krb5support com_err
 VERSION_MAP=	${.CURDIR}/version.map
 PCFILES=	kadm-client.pc
@@ -35,7 +35,8 @@ CFLAGS+=-I${KRB5_DIR}/lib \
 	-I${KRB5_DIR}/include \
 	-I${KRB5_OBJTOP}/include/krb5_private \
 	-I${KRB5_SRCTOP}/include \
-	-I${KRB5_OBJTOP}/lib
+	-I${KRB5_OBJTOP}/lib \
+	-I${KRB5_OBJTOP}/util/profile
 
 INCSDIR=${INCLUDEDIR}/kadm5
 INCS=	admin.h \

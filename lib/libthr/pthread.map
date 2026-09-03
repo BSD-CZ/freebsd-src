@@ -342,3 +342,8 @@ FBSD_1.8 {
 	 pthread_signals_unblock_np;
 	 pthread_sigqueue;
 };
+
+FBSD_1.9 {
+	 pthread_cond_clockwait;
+	 pthread_tryjoin_np;
+};

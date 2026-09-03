@@ -262,11 +262,11 @@ static const struct ufshci_power_entry power_map[POWER_STYPE_COUNT] = {
 	    UFSHCI_UIC_LINK_STATE_ACTIVE },
 	[POWER_STYPE_STANDBY] = { UFSHCI_DEV_PWR_SLEEP, SSS_PC_IDLE,
 	    UFSHCI_UIC_LINK_STATE_HIBERNATE },
-	[POWER_STYPE_SUSPEND_TO_MEM] = { UFSHCI_DEV_PWR_POWERDOWN,
+	[POWER_STYPE_FW_SUSPEND] = { UFSHCI_DEV_PWR_POWERDOWN,
 	    SSS_PC_STANDBY, UFSHCI_UIC_LINK_STATE_HIBERNATE },
 	[POWER_STYPE_SUSPEND_TO_IDLE] = { UFSHCI_DEV_PWR_SLEEP, SSS_PC_IDLE,
 	    UFSHCI_UIC_LINK_STATE_HIBERNATE },
-	[POWER_STYPE_HIBERNATE] = { UFSHCI_DEV_PWR_DEEPSLEEP, 0x40,
+	[POWER_STYPE_FW_HIBERNATE] = { UFSHCI_DEV_PWR_DEEPSLEEP, 0x40,
 	    UFSHCI_UIC_LINK_STATE_OFF },
 	[POWER_STYPE_POWEROFF] = { UFSHCI_DEV_PWR_POWERDOWN, SSS_PC_STANDBY,
 	    UFSHCI_UIC_LINK_STATE_OFF },
@@ -277,8 +277,6 @@ struct ufshci_device {
 
 	struct ufshci_device_descriptor dev_desc;
 	struct ufshci_geometry_descriptor geo_desc;
-
-	uint32_t unipro_version;
 
 	/* WriteBooster */
 	bool is_wb_enabled;
@@ -317,12 +315,18 @@ struct ufshci_controller {
 #define UFSHCI_QUIRK_NOT_SUPPORT_ABORT_TASK \
 	16 /* QEMU does not support Task Management Request */
 #define UFSHCI_QUIRK_SKIP_WELL_KNOWN_LUNS \
-	32 /* QEMU does not support Well known logical units*/
+	32 /* QEMU does not support Well known logical units */
 #define UFSHCI_QUIRK_BROKEN_AUTO_HIBERNATE                                    \
 	64 /* Some controllers have the Auto hibernate feature enabled but it \
 	      does not work. */
+#define UFSHCI_QUIRK_REINIT_AFTER_MAX_GEAR_SWITCH                            \
+	128 /* Some controllers need to reinit the device after gear switch. \
+	     */
+#define UFSHCI_QUIRK_BROKEN_LSDBS_MCQS_CAP \
+	256 /* Some controllers have their LSDB and MCQS fields reset to 0. */
 
 	uint32_t ref_clk;
+	uint32_t hs_series;
 
 	struct cam_sim *ufshci_sim;
 	struct cam_path *ufshci_path;
@@ -393,20 +397,20 @@ struct ufshci_controller {
 	/* UFS Transport Protocol Layer (UTP) */
 	struct ufshci_req_queue task_mgmt_req_queue;
 	struct ufshci_req_queue transfer_req_queue;
-	bool is_single_db_supported; /* 0 = supported */
-	bool is_mcq_supported;	     /* 1 = supported */
+	bool is_single_db_supported;
+	bool is_mcq_supported;
 
 	/* UFS Interconnect Layer (UIC) */
 	struct mtx uic_cmd_lock;
-	uint32_t unipro_version;
-	uint8_t hs_gear;
+	uint32_t tx_rx_power_mode;
+	uint32_t hs_gear;
 	uint32_t tx_lanes;
 	uint32_t rx_lanes;
 	uint32_t max_rx_hs_gear;
 	uint32_t max_tx_lanes;
 	uint32_t max_rx_lanes;
 
-	bool is_failed;
+	uint32_t is_failed;
 };
 
 #define ufshci_mmio_offsetof(reg) offsetof(struct ufshci_registers, reg)
@@ -431,6 +435,7 @@ uint8_t ufshci_sim_translate_scsi_to_ufs_lun(lun_id_t scsi_lun);
 uint64_t ufshci_sim_translate_ufs_to_scsi_lun(uint8_t ufs_lun);
 int ufshci_sim_attach(struct ufshci_controller *ctrlr);
 void ufshci_sim_detach(struct ufshci_controller *ctrlr);
+void ufshci_sim_release_wlun_periph(struct ufshci_controller *ctrlr);
 struct cam_periph *ufshci_sim_find_periph(struct ufshci_controller *ctrlr,
     uint8_t wlun);
 int ufshci_sim_send_ssu(struct ufshci_controller *ctrlr, bool start,
@@ -445,15 +450,14 @@ int ufshci_ctrlr_suspend(struct ufshci_controller *ctrlr,
 int ufshci_ctrlr_resume(struct ufshci_controller *ctrlr,
     enum power_stype stype);
 int ufshci_ctrlr_disable(struct ufshci_controller *ctrlr);
+int ufshci_ctrlr_enable(struct ufshci_controller *ctrlr);
 /* ctrlr defined as void * to allow use with config_intrhook. */
 void ufshci_ctrlr_start_config_hook(void *arg);
 void ufshci_ctrlr_poll(struct ufshci_controller *ctrlr);
 
 int ufshci_ctrlr_submit_task_mgmt_request(struct ufshci_controller *ctrlr,
     struct ufshci_request *req);
-int ufshci_ctrlr_submit_admin_request(struct ufshci_controller *ctrlr,
-    struct ufshci_request *req);
-int ufshci_ctrlr_submit_io_request(struct ufshci_controller *ctrlr,
+int ufshci_ctrlr_submit_transfer_request(struct ufshci_controller *ctrlr,
     struct ufshci_request *req);
 int ufshci_ctrlr_send_nop(struct ufshci_controller *ctrlr);
 
@@ -477,12 +481,12 @@ int ufshci_dev_link_state_transition(struct ufshci_controller *ctrlr,
     enum ufshci_uic_link_state target_state);
 
 /* Controller Command */
-void ufshci_ctrlr_cmd_send_task_mgmt_request(struct ufshci_controller *ctrlr,
+int ufshci_ctrlr_cmd_send_task_mgmt_request(struct ufshci_controller *ctrlr,
     ufshci_cb_fn_t cb_fn, void *cb_arg, uint8_t function, uint8_t lun,
     uint8_t task_tag, uint8_t iid);
-void ufshci_ctrlr_cmd_send_nop(struct ufshci_controller *ctrlr,
+int ufshci_ctrlr_cmd_send_nop(struct ufshci_controller *ctrlr,
     ufshci_cb_fn_t cb_fn, void *cb_arg);
-void ufshci_ctrlr_cmd_send_query_request(struct ufshci_controller *ctrlr,
+int ufshci_ctrlr_cmd_send_query_request(struct ufshci_controller *ctrlr,
     ufshci_cb_fn_t cb_fn, void *cb_arg, struct ufshci_query_param param);
 void ufshci_ctrlr_cmd_send_scsi_command(struct ufshci_controller *ctrlr,
     ufshci_cb_fn_t cb_fn, void *cb_arg, uint8_t *cmd_ptr, uint8_t cmd_len,
@@ -499,9 +503,9 @@ int ufshci_utmr_req_queue_enable(struct ufshci_controller *ctrlr);
 void ufshci_utr_req_queue_disable(struct ufshci_controller *ctrlr);
 int ufshci_utr_req_queue_enable(struct ufshci_controller *ctrlr);
 void ufshci_req_queue_fail(struct ufshci_controller *ctrlr,
-    struct ufshci_hw_queue *hwq);
+    struct ufshci_req_queue *req_queue);
 int ufshci_req_queue_submit_request(struct ufshci_req_queue *req_queue,
-    struct ufshci_request *req, bool is_admin);
+    struct ufshci_request *req);
 void ufshci_req_queue_complete_tracker(struct ufshci_tracker *tr);
 
 /* Request Single Doorbell Queue */

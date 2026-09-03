@@ -337,6 +337,7 @@ fuse_vfsop_mount(struct mount *mp)
 	FUSE_FLAGOPT(push_symlinks_in, FSESS_PUSH_SYMLINKS_IN);
 	FUSE_FLAGOPT(default_permissions, FSESS_DEFAULT_PERMISSIONS);
 	FUSE_FLAGOPT(intr, FSESS_INTR);
+	FUSE_FLAGOPT(auto_unmount, FSESS_AUTO_UNMOUNT);
 
 	(void)vfs_scanopt(opts, "max_read=", "%u", &max_read);
 	(void)vfs_scanopt(opts, "linux_errnos", "%d", &linux_errnos);
@@ -600,6 +601,8 @@ fuse_vfsop_vget(struct mount *mp, ino_t ino, int flags, struct vnode **vpp)
 	error = fuse_vnode_get(mp, feo, nodeid, NULL, vpp, NULL, vtyp);
 	if (error)
 		goto out;
+	/* for last_local_modify and fuse_internal_cache_attrs */
+	ASSERT_VOP_ELOCKED(*vpp, __func__);
 	fvdat = VTOFUD(*vpp);
 
 	if (timespeccmp(&now, &fvdat->last_local_modify, >)) {

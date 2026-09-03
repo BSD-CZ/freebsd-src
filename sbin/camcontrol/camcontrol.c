@@ -1,4 +1,6 @@
 /*
+ * SPDX-License-Identifier: BSD-3-Clause
+ *
  * Copyright (c) 1997-2007 Kenneth D. Merry
  * All rights reserved.
  *
@@ -1024,7 +1026,6 @@ scsistart(struct cam_device *device, int startstop, int loadeject,
 			/* start/stop */ startstop,
 			/* load_eject */ loadeject,
 			/* immediate */ 0,
-			/* power_condition */ SSS_PC_START_VALID,
 			/* sense_len */ SSD_FULL_SIZE,
 			/* timeout */ timeout ? timeout : 120000);
 
@@ -1670,6 +1671,35 @@ atacapprint(struct ata_params *parm)
 				printf("0");
 			printf(" ");
 		}
+	}
+	printf("\n");
+
+	printf("transport revision    ");
+	if (parm->transport_major == 0 || parm->transport_major == 0xffff) {
+		printf("Unknown");
+	} else {
+		if (parm->transport_major & 0x0400)
+			printf("SATA Rev 3.5");
+		else if (parm->transport_major & 0x0200)
+			printf("SATA Rev 3.4");
+		else if (parm->transport_major & 0x0100)
+			printf("SATA Rev 3.3");
+		else if (parm->transport_major & 0x0080)
+			printf("SATA Rev 3.2");
+		else if (parm->transport_major & 0x0040)
+			printf("SATA Rev 3.1");
+		else if (parm->transport_major & 0x0020)
+			printf("SATA Rev 3.0");
+		else if (parm->transport_major & 0x0010)
+			printf("SATA Rev 2.6");
+		else if (parm->transport_major & 0x0008)
+			printf("SATA Rev 2.5");
+		else if (parm->transport_major & 0x0004)
+			printf("SATA II: Extensions");
+		else if (parm->transport_major & 0x0002)
+			printf("SATA 1.0a");
+		else if (parm->transport_major & 0x0001)
+			printf("ATA8-AST");
 	}
 	printf("\n");
 

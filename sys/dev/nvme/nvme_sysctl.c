@@ -69,7 +69,7 @@ nvme_dump_queue(struct nvme_qpair *qpair)
 
 	printf("Submission queue:\n");
 	for (i = 0; i < qpair->num_entries; i++) {
-		cmd = &qpair->cmd[i];
+		cmd = NVME_SQE(qpair, i);
 		printf("%05d: ", i);
 		nvme_qpair_print_command(qpair, cmd);
 	}
@@ -425,7 +425,7 @@ nvme_sysctl_initialize_ctrlr(struct nvme_controller *ctrlr)
 	    CTLFLAG_RD, &ctrlr->cap_hi, 0,
 	    "Hi 32-bits of capacities for the drive");
 
-	SYSCTL_ADD_UINT(ctrlr_ctx, ctrlr_list, OID_AUTO, "fail_on_reset",
+	SYSCTL_ADD_BOOL(ctrlr_ctx, ctrlr_list, OID_AUTO, "fail_on_reset",
 	    CTLFLAG_RD, &ctrlr->fail_on_reset, 0,
 	    "Pretend the next reset fails and fail the controller");
 

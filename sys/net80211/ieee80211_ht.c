@@ -34,6 +34,7 @@
 
 #include <sys/param.h>
 #include <sys/kernel.h>
+#include <sys/libkern.h>
 #include <sys/malloc.h>
 #include <sys/systm.h> 
 #include <sys/endian.h>
@@ -1130,7 +1131,8 @@ again:
 		 */
 		if (rap->rxa_qframes != 0) {
 			/* XXX honor batimeout? */
-			if (ticks - rap->rxa_age > ieee80211_ampdu_age) {
+			if (ieee80211_time_after(ticks - rap->rxa_age,
+			    ieee80211_ampdu_age)) {
 				/*
 				 * Too long since we received the first
 				 * frame; flush the reorder buffer.
@@ -1392,7 +1394,8 @@ ieee80211_ht_node_age(struct ieee80211_node *ni)
 		 * See above for more details on what's happening here.
 		 */
 		/* XXX honor batimeout? */
-		if (ticks - rap->rxa_age > ieee80211_ampdu_age) {
+		if (ieee80211_time_after(ticks - rap->rxa_age,
+		    ieee80211_ampdu_age)) {
 			/*
 			 * Too long since we received the first
 			 * frame; flush the reorder buffer.
@@ -2036,11 +2039,11 @@ do {									\
 	}
 
 	/* CCFS1 > 0 and | CCFS1 - CCFS0 | = 8 */
-	if (ni->ni_vht_chan2 > 0 && (ni->ni_vht_chan2 - ni->ni_vht_chan1) == 8)
+	if (ni->ni_vht_chan2 > 0 && abs(ni->ni_vht_chan2 - ni->ni_vht_chan1) == 8)
 		can_vht160 = can_vht80 = true;
 
 	/* CCFS1 > 0 and | CCFS1 - CCFS0 | > 16 */
-	if (ni->ni_vht_chan2 > 0 && (ni->ni_vht_chan2 - ni->ni_vht_chan1) > 16)
+	if (ni->ni_vht_chan2 > 0 && abs(ni->ni_vht_chan2 - ni->ni_vht_chan1) > 16)
 		can_vht80p80 = can_vht80 = true;
 
 	/* CFFS1 == 0 */
@@ -2766,10 +2769,15 @@ ieee80211_ampdu_enable(struct ieee80211_node *ni,
 	return 1;
 }
 
-/*
- * Request A-MPDU tx aggregation.  Setup local state and
- * issue an ADDBA request.  BA use will only happen after
+/**
+ * @brief Request A-MPDU tx aggregation.
+ *
+ * Setup local state and issue an ADDBA request.  BA use will only happen after
  * the other end replies with ADDBA response.
+ *
+ * @param ni ieee80211_node update
+ * @param tap tx_ampdu state
+ * @returns 1 on success and 0 on error
  */
 int
 ieee80211_ampdu_request(struct ieee80211_node *ni,
@@ -2777,7 +2785,7 @@ ieee80211_ampdu_request(struct ieee80211_node *ni,
 {
 	struct ieee80211com *ic = ni->ni_ic;
 	uint16_t args[5];
-	int tid, dialogtoken;
+	int tid, dialogtoken, error;
 	static int tokens = 0;	/* XXX */
 
 	/* XXX locking */
@@ -2819,7 +2827,7 @@ ieee80211_ampdu_request(struct ieee80211_node *ni,
 		/* defer next try so we don't slam the driver with requests */
 		tap->txa_attempts = ieee80211_addba_maxtries;
 		/* NB: check in case driver wants to override */
-		if (tap->txa_nextrequest <= ticks)
+		if (ieee80211_time_before_eq(tap->txa_nextrequest, ticks))
 			tap->txa_nextrequest = ticks + ieee80211_addba_backoff;
 		return 0;
 	}
@@ -2828,8 +2836,11 @@ ieee80211_ampdu_request(struct ieee80211_node *ni,
 	args[4] = _IEEE80211_SHIFTMASK(tap->txa_start, IEEE80211_BASEQ_START)
 		| _IEEE80211_SHIFTMASK(0, IEEE80211_BASEQ_FRAG)
 		;
-	return ic->ic_send_action(ni, IEEE80211_ACTION_CAT_BA,
+
+	error = ic->ic_send_action(ni, IEEE80211_ACTION_CAT_BA,
 		IEEE80211_ACTION_BA_ADDBA_REQUEST, args);
+	/* Silly return of 1 for success here. */
+	return (error == 0);
 }
 
 /*
@@ -2888,7 +2899,7 @@ bar_timeout(void *arg)
 	if ((tap->txa_flags & IEEE80211_AGGR_BARPEND) == 0)
 		return;
 	/* XXX ? */
-	if (tap->txa_attempts >= ieee80211_bar_maxtries) {
+	if (ieee80211_ht_check_bar_exceed_retry_count(ni, tap->txa_attempts)) {
 		struct ieee80211com *ic = ni->ni_ic;
 
 		ni->ni_vap->iv_stats.is_ampdu_bar_tx_fail++;
@@ -3833,4 +3844,22 @@ ieee80211_ht_check_tx_ht40(const struct ieee80211_node *ni)
 	return (IEEE80211_IS_CHAN_HT40(bss_chan) &&
 	    IEEE80211_IS_CHAN_HT40(ni->ni_chan) &&
 	    (ni->ni_chw == NET80211_STA_RX_BW_40));
+}
+
+/**
+ * @brief Return whether the given BAR retry count exceeds the configured count
+ *
+ * @param ni ieee80211_node to check against
+ * @param count BAR retry count
+ * @returns true if the count has exceeded the configured count, false if not
+ */
+bool
+ieee80211_ht_check_bar_exceed_retry_count(const struct ieee80211_node *ni __unused,
+    int count)
+{
+	/*
+	 * Note: ni isn't used here because the BAR limit is currently
+	 * global.  It's here for future work.
+	 */
+	return (count >= ieee80211_bar_maxtries);
 }

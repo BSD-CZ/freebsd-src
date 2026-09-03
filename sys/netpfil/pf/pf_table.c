@@ -446,9 +446,9 @@ pfr_set_addrs(struct pfr_table *tbl, struct pfr_addr *addr, int size,
 			}
 			p = pfr_create_kentry(&ad,
 			    (kt->pfrkt_flags & PFR_TFLAG_COUNTERS) != 0);
-			p->pfrke_mark = PFR_FB_ADDED;
 			if (p == NULL)
 				senderr(ENOMEM);
+			p->pfrke_mark = PFR_FB_ADDED;
 			if (pfr_route_kentry(tmpkt, p)) {
 				pfr_destroy_kentry(p);
 				ad.pfra_fback = PFR_FB_NONE;
@@ -878,6 +878,26 @@ pfr_insert_kentry(struct pfr_ktable *kt, struct pfr_addr *ad, time_t tzero)
 
 	p->pfrke_counters.pfrkc_tzero = tzero;
 	kt->pfrkt_cnt++;
+
+	return (0);
+}
+
+int
+pfr_remove_kentry(struct pfr_ktable *kt, struct pfr_addr *ad)
+{
+	struct pfr_kentryworkq	 workq = SLIST_HEAD_INITIALIZER(workq);
+	struct pfr_kentry	*p;
+
+	p = pfr_lookup_addr(kt, ad, 1);
+	if (p == NULL || p->pfrke_not)
+		return (ESRCH);
+
+	if (p->pfrke_mark)
+		return (0);
+
+	p->pfrke_mark = 1;
+	SLIST_INSERT_HEAD(&workq, p, pfrke_workq);
+	pfr_remove_kentries(kt, &workq);
 
 	return (0);
 }
@@ -2403,7 +2423,7 @@ _next_block:
 
 _next_entry:
 		/* we need to increase the counter past the nested block */
-		pfr_prepare_network(&umask, AF_INET, ke2->pfrke_net);
+		pfr_prepare_network(&umask, af, ke2->pfrke_net);
 		pfr_sockaddr_to_pf_addr(&umask, &umask_addr);
 		pf_poolmask(addr, addr, &umask_addr, &pfr_ffaddr, af);
 		pf_addr_inc(addr, af);

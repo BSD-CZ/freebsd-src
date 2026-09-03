@@ -491,7 +491,7 @@ unionfs_noderem(struct vnode *vp)
 	 * to synchronize against any unionfs_lock() operation which may still
 	 * hold the lower vnode lock.  We do not need to do this for the root
 	 * vnode, as the root vnode should always have both upper and lower
-	 * base vnodes for its entire lifecycled, so unionfs_lock() should
+	 * base vnodes for its entire lifecycle, so unionfs_lock() should
 	 * never attempt to lock its lower vnode in the first place.
 	 * Moreover, during unmount of a non-"below" unionfs mount, the lower
 	 * root vnode will already be locked as it is the covered vnode.
@@ -1071,7 +1071,7 @@ unionfs_forward_vop_ref(struct vnode *basevp, int *lkflags)
  *    forwarded VOP reacquires the base vnode lock the unionfs vnode
  *    lock will no longer be held.  This can lead to violation of the
  *    caller's sychronization requirements as well as various failed
- *    locking assertions when DEBUG_VFS_LOCKS is enabled.
+ *    locking assertions when INVARIANTS is enabled.
  * 2) Loss of reference on the base vnode.  The caller is expected to
  *    hold a v_usecount reference on the unionfs vnode, while the
  *    unionfs vnode holds a reference on the base-layer vnode(s).  But

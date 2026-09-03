@@ -70,6 +70,12 @@
 #include <cam/scsi/scsi_pass.h>
 
 
+/* SDT Probes */
+SDT_PROBE_DEFINE1(cam, , xpt, action, "union ccb *");
+SDT_PROBE_DEFINE1(cam, , xpt, done, "union ccb *");
+SDT_PROBE_DEFINE4(cam, , xpt, async__cb, "void *", "uint32_t",
+    "struct cam_path *", "void *");
+
 /* Wild guess based on not wanting to grow the stack too much */
 #define XPT_PRINT_MAXLEN	512
 #ifdef PRINTF_BUFR_SIZE
@@ -80,8 +86,8 @@
 _Static_assert(XPT_PRINT_LEN <= XPT_PRINT_MAXLEN, "XPT_PRINT_LEN is too large");
 
 /*
- * This is the maximum number of high powered commands (e.g. start unit)
- * that can be outstanding at a particular time.
+ * This sets a default for the the maximum number of high powered commands
+ * (e.g. start unit) that can be outstanding at a particular time.
  */
 #ifndef CAM_MAX_HIGHPOWER
 #define CAM_MAX_HIGHPOWER  4
@@ -162,6 +168,9 @@ SYSCTL_INT(_kern_cam, OID_AUTO, boot_delay, CTLFLAG_RDTUN,
            &xsoftc.boot_delay, 0, "Bus registration wait time");
 SYSCTL_UINT(_kern_cam, OID_AUTO, xpt_generation, CTLFLAG_RD,
 	    &xsoftc.xpt_generation, 0, "CAM peripheral generation count");
+SYSCTL_INT(_kern_cam, OID_AUTO, max_high_power, CTLFLAG_RWTUN,
+           &xsoftc.num_highpower, 0,
+	   "Max number of high power commands to be issued at once");
 
 struct cam_doneq {
 	struct mtx_padalign	cam_doneq_mtx;
@@ -886,7 +895,10 @@ xpt_init(void *dummy)
 	TAILQ_INIT(&xsoftc.xpt_busses);
 	TAILQ_INIT(&xsoftc.ccb_scanq);
 	STAILQ_INIT(&xsoftc.highpowerq);
-	xsoftc.num_highpower = CAM_MAX_HIGHPOWER;
+
+	/* Fall back to a default if the kenv tunable isn't set */
+	if (xsoftc.num_highpower == 0)
+		xsoftc.num_highpower = CAM_MAX_HIGHPOWER;
 
 	mtx_init(&xsoftc.xpt_highpower_lock, "XPT highpower lock", NULL, MTX_DEF);
 	xsoftc.xpt_taskq = taskqueue_create("CAM XPT task", M_WAITOK,
@@ -1021,6 +1033,10 @@ xpt_add_periph(struct cam_periph *periph)
 	return (status);
 }
 
+/*
+ * Remove this peripheral from the list of peripherals the devices maintains.
+ * Bump generation numbers to note topology changes.
+ */
 void
 xpt_remove_periph(struct cam_periph *periph)
 {
@@ -2479,6 +2495,8 @@ xptsetasyncfunc(struct cam_ed *device, void *arg)
 			 device->target->target_id,
 			 device->lun_id);
 	xpt_gdev_type(&cgd, &path);
+	CAM_PROBE4(xpt, async__cb, csa->callback_arg,
+	    AC_FOUND_DEVICE, &path, &cgd);
 	csa->callback(csa->callback_arg,
 			    AC_FOUND_DEVICE,
 			    &path, &cgd);
@@ -2500,6 +2518,8 @@ xptsetasyncbusfunc(struct cam_eb *bus, void *arg)
 			 CAM_LUN_WILDCARD);
 	xpt_path_lock(&path);
 	xpt_path_inq(&cpi, &path);
+	CAM_PROBE4(xpt, async__cb, csa->callback_arg,
+	    AC_PATH_REGISTERED, &path, &cpi);
 	csa->callback(csa->callback_arg,
 			    AC_PATH_REGISTERED,
 			    &path, &cpi);
@@ -2526,6 +2546,7 @@ xpt_action(union ccb *start_ccb)
 	    start_ccb->ccb_h.pinfo.priority != CAM_PRIORITY_NONE,
 	    ("%s: queued ccb and CAM_PRIORITY_NONE illegal.", __func__));
 
+	CAM_PROBE1(xpt, action, start_ccb);
 	start_ccb->ccb_h.status = CAM_REQ_INPROG;
 	(*(start_ccb->ccb_h.path->bus->xport->ops->action))(start_ccb);
 }
@@ -2764,6 +2785,7 @@ call_sim:
 		device = path->device;
 		periph_head = &device->periphs;
 		cgdl = &start_ccb->cgdl;
+		start_ccb->ccb_h.status = CAM_REQ_CMP;
 
 		/*
 		 * Check and see if the list has changed since the user
@@ -2805,7 +2827,6 @@ call_sim:
 		cgdl->index++;
 		cgdl->generation = device->generation;
 
-		cgdl->ccb_h.status = CAM_REQ_CMP;
 		break;
 	}
 	case XPT_DEV_MATCH:
@@ -4260,6 +4281,8 @@ xpt_async_bcast(struct async_list *async_head,
 			    path->device->sim->mtx : NULL;
 			if (mtx)
 				mtx_lock(mtx);
+			CAM_PROBE4(xpt, async__cb, cur_entry->callback_arg,
+			    async_code, path, async_arg);
 			cur_entry->callback(cur_entry->callback_arg,
 					    async_code, path,
 					    async_arg);
@@ -4499,8 +4522,10 @@ xpt_done(union ccb *done_ccb)
 		done_ccb->ccb_h.func_code,
 		xpt_action_name(done_ccb->ccb_h.func_code),
 		done_ccb->ccb_h.status));
-	if ((done_ccb->ccb_h.func_code & XPT_FC_QUEUED) == 0)
+	if ((done_ccb->ccb_h.func_code & XPT_FC_QUEUED) == 0) {
+		CAM_PROBE1(xpt, done, done_ccb);
 		return;
+	}
 
 	/* Store the time the ccb was in the sim */
 	done_ccb->ccb_h.qos.periph_data = cam_iosched_delta_t(done_ccb->ccb_h.qos.periph_data);
@@ -5376,6 +5401,11 @@ xpt_done_process(struct ccb_hdr *ccb_h)
 		}
 	}
 
+	/*
+	 * Call as late as possible. Do we want an early one too before the
+	 * unfreeze / releases above?
+	 */
+	CAM_PROBE1(xpt, done, (union ccb *)ccb_h);	/* container_of? */
 	/* Call the peripheral driver's callback */
 	ccb_h->pinfo.index = CAM_UNQUEUED_INDEX;
 	(*ccb_h->cbfcnp)(ccb_h->path->periph, (union ccb *)ccb_h);

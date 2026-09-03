@@ -3033,8 +3033,8 @@ wg_clone_create(struct if_clone *ifc, char *name, size_t len,
 	if_attach(ifp);
 	bpfattach(ifp, DLT_NULL, sizeof(uint32_t));
 #ifdef INET6
-	ND_IFINFO(ifp)->flags &= ~ND6_IFF_AUTO_LINKLOCAL;
-	ND_IFINFO(ifp)->flags |= ND6_IFF_NO_DAD;
+	if_getinet6(ifp)->nd_flags &= ~ND6_IFF_AUTO_LINKLOCAL;
+	if_getinet6(ifp)->nd_flags |= ND6_IFF_NO_DAD;
 #endif
 	sx_xlock(&wg_sx);
 	LIST_INSERT_HEAD(&wg_list, sc, sc_entry);
@@ -3241,7 +3241,7 @@ wg_module_init(void)
 	wg_packet_zone = uma_zcreate("wg packet", sizeof(struct wg_packet),
 	     NULL, NULL, NULL, NULL, 0, 0);
 
-	ret = crypto_init();
+	ret = wg_crypto_init();
 	if (ret != 0)
 		return (ret);
 	ret = cookie_init();
@@ -3274,7 +3274,7 @@ wg_module_deinit(void)
 	if (wg_osd_jail_slot != 0)
 		osd_jail_deregister(wg_osd_jail_slot);
 	cookie_deinit();
-	crypto_deinit();
+	wg_crypto_deinit();
 	if (wg_packet_zone != NULL)
 		uma_zdestroy(wg_packet_zone);
 }

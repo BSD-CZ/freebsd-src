@@ -110,6 +110,7 @@ src_dst_head()
 {
 	atf_set descr 'Test killing a state with source and destination specified'
 	atf_set require.user root
+	atf_set require.progs python3 scapy
 }
 
 src_dst_body()
@@ -665,7 +666,7 @@ key_body()
 		--replyif ${epair}a
 
 	# Get the state key
-	key=$(jexec alcatraz pfctl -ss -vvv | awk '/icmp/ { print($2 " " $3 " " $4 " " $5); }')
+	key=$(jexec alcatraz pfctl -ss -vvv | awk '/all icmp/ { print($2 " " $3 " " $4 " " $5); }')
 	bad_key=$(echo ${key} | sed 's/icmp/tcp/')
 
 	# Kill the wrong key

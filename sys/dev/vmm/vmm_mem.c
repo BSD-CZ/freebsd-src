@@ -23,6 +23,7 @@
 
 #include <dev/vmm/vmm_dev.h>
 #include <dev/vmm/vmm_mem.h>
+#include <dev/vmm/vmm_vm.h>
 
 static void vm_free_memmap(struct vm *vm, int ident);
 
@@ -448,7 +449,7 @@ _vm_gpa_hold(struct vm *vm, vm_paddr_t gpa, size_t len, int reqprot,
 
 	if (count == 1) {
 		*cookie = m;
-		return ((void *)(PHYS_TO_DMAP(VM_PAGE_TO_PHYS(m)) + pageoff));
+		return ((char *)VM_PAGE_TO_DMAP(m) + pageoff);
 	} else {
 		*cookie = NULL;
 		return (NULL);

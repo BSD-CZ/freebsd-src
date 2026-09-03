@@ -13,7 +13,7 @@
 .include "${KRB5_SRCTOP}/Makefile.pc"
 
 LIB=		kadm5srv_mit
-LDFLAGS=	-Wl,--no-undefined
+LDFLAGS+=	-Wl,--no-undefined
 LIBADD=		krb5profile gssrpc gssapi_krb5 kdb5 krb5 k5crypto krb5support com_err
 VERSION_MAP=	${.CURDIR}/version.map
 PCFILES=	kadm-server.pc
@@ -41,7 +41,8 @@ CFLAGS+=-I${KRB5_DIR}/lib \
 	-I${KRB5_OBJTOP}/lib \
 	-I${KRB5_OBJTOP}/lib/gssapi \
 	-I${KRB5_DIR}/lib/gssapi/krb5 \
-	-I${KRB5_DIR}/lib/gssapi/generic
+	-I${KRB5_DIR}/lib/gssapi/generic \
+	-I${KRB5_OBJTOP}/util/profile
 CWARNFLAGS.gcc+=-Wno-alloc-size-larger-than
 
 GEN_KADM_ERR=	kadm_err.et

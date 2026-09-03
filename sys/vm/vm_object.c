@@ -196,9 +196,9 @@ vm_object_zdtor(void *mem, int size, void *arg)
 	KASSERT(object->type == OBJT_DEAD,
 	    ("object %p has non-dead type %d",
 	    object, object->type));
-	KASSERT(object->charge == 0 && object->cred == NULL,
-	    ("object %p has non-zero charge %ju (%p)",
-	    object, (uintmax_t)object->charge, object->cred));
+	KASSERT(object->cred == NULL,
+	    ("object %p has non-zero charge cred %p",
+	    object, object->cred));
 }
 #endif
 
@@ -254,7 +254,6 @@ _vm_object_allocate(objtype_t type, vm_pindex_t size, u_short flags,
 	refcount_init(&object->ref_count, 1);
 	object->memattr = VM_MEMATTR_DEFAULT;
 	object->cred = NULL;
-	object->charge = 0;
 	object->handle = handle;
 	object->backing_object = NULL;
 	object->backing_object_offset = (vm_ooffset_t) 0;
@@ -452,7 +451,7 @@ vm_object_allocate_dyn(objtype_t dyntype, vm_pindex_t size, u_short flags)
  */
 vm_object_t
 vm_object_allocate_anon(vm_pindex_t size, vm_object_t backing_object,
-    struct ucred *cred, vm_size_t charge)
+    struct ucred *cred)
 {
 	vm_object_t handle, object;
 
@@ -466,7 +465,6 @@ vm_object_allocate_anon(vm_pindex_t size, vm_object_t backing_object,
 	_vm_object_allocate(OBJT_SWAP, size,
 	    OBJ_ANON | OBJ_ONEMAPPING | OBJ_SWAP, object, handle);
 	object->cred = cred;
-	object->charge = cred != NULL ? charge : 0;
 	return (object);
 }
 
@@ -1448,7 +1446,7 @@ vm_object_shadow(vm_object_t *object, vm_ooffset_t *offset, vm_size_t length,
 	/*
 	 * Allocate a new object with the given length.
 	 */
-	result = vm_object_allocate_anon(atop(length), source, cred, length);
+	result = vm_object_allocate_anon(atop(length), source, cred);
 
 	/*
 	 * Store the offset into the source object, and fix up the offset into
@@ -1511,12 +1509,14 @@ vm_object_split(vm_map_entry_t entry)
 	struct pctrie_iter pages;
 	vm_page_t m;
 	vm_object_t orig_object, new_object, backing_object;
+	struct ucred *cred;
 	vm_pindex_t offidxstart;
 	vm_size_t size;
 
 	orig_object = entry->object.vm_object;
 	KASSERT((orig_object->flags & OBJ_ONEMAPPING) != 0,
-	    ("vm_object_split:  Splitting object with multiple mappings."));
+	    ("%s: splitting object %p with multiple mappings",
+	    __func__, orig_object));
 	if ((orig_object->flags & OBJ_ANON) == 0)
 		return;
 	if (orig_object->ref_count <= 1)
@@ -1525,9 +1525,26 @@ vm_object_split(vm_map_entry_t entry)
 
 	offidxstart = OFF_TO_IDX(entry->offset);
 	size = atop(entry->end - entry->start);
+	if (orig_object->cred != NULL) {
+		/*
+		 * vm_object_split() is currently called from
+		 * vmspace_fork(), and it might be tempting to add the
+		 * charge for the split object to fork_charge.  But
+		 * fork_charge is discharged on error when the copied
+		 * vmspace is destroyed.  Since the split object is
+		 * inserted into the shadow hierarchy serving the
+		 * source vm_map, it is kept even after the
+		 * unsuccessful fork, meaning that we have to force
+		 * its swap usage.
+		 */
+		cred = curthread->td_ucred;
+		crhold(cred);
+		swap_reserve_force_by_cred(ptoa(size), cred);
+	} else {
+		cred = NULL;
+	}
 
-	new_object = vm_object_allocate_anon(size, orig_object,
-	    orig_object->cred, ptoa(size));
+	new_object = vm_object_allocate_anon(size, orig_object, cred);
 
 	/*
 	 * We must wait for the orig_object to complete any in-progress
@@ -1550,12 +1567,6 @@ vm_object_split(vm_map_entry_t entry)
 		new_object->backing_object_offset = 
 		    orig_object->backing_object_offset + entry->offset;
 	}
-	if (orig_object->cred != NULL) {
-		crhold(orig_object->cred);
-		KASSERT(orig_object->charge >= ptoa(size),
-		    ("orig_object->charge < 0"));
-		orig_object->charge -= ptoa(size);
-	}
 
 	/*
 	 * Mark the split operation so that swap_pager_getpages() knows
@@ -1564,6 +1575,8 @@ vm_object_split(vm_map_entry_t entry)
 	vm_object_set_flag(orig_object, OBJ_SPLIT);
 	vm_page_iter_limit_init(&pages, orig_object, offidxstart + size);
 retry:
+	KASSERT((orig_object->flags & OBJ_ONEMAPPING) != 0,
+	    ("%s: object %p lost ONEMAPPING", __func__, orig_object));
 	KASSERT(pctrie_iter_is_reset(&pages),
 	    ("%s: pctrie_iter not reset for retry", __func__));
 	for (m = vm_radix_iter_lookup_ge(&pages, offidxstart); m != NULL;
@@ -2233,7 +2246,6 @@ vm_object_coalesce(vm_object_t prev_object, vm_ooffset_t prev_offset,
 				swap_release_by_cred(ptoa(prev_object->size -
 				    next_pindex), prev_object->cred);
 			}
-			prev_object->charge += charge;
 		} else if ((cflags & OBJCO_CHARGED) != 0) {
 			/*
 			 * The caller charged, but the object has
@@ -2786,9 +2798,8 @@ DB_SHOW_COMMAND(object, vm_object_print_static)
 	db_iprintf("Object %p: type=%d, size=0x%jx, res=%d, ref=%d, flags=0x%x",
 	    object, (int)object->type, (uintmax_t)object->size,
 	    object->resident_page_count, object->ref_count, object->flags);
-	db_iprintf(" ruid %d charge %jx\n",
-	    object->cred ? object->cred->cr_ruid : -1,
-	    (uintmax_t)object->charge);
+	db_iprintf(" ruid %d\n",
+	    object->cred ? object->cred->cr_ruid : -1);
 	db_iprintf(" sref=%d, backing_object(%d)=(%p)+0x%jx\n",
 	    atomic_load_int(&object->shadow_count),
 	    object->backing_object ? object->backing_object->ref_count : 0,

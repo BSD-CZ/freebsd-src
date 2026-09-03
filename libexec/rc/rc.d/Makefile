@@ -11,6 +11,7 @@ CONFS=	DAEMON \
 	NETWORKING \
 	SERVERS \
 	adjkerntz \
+	backlight \
 	bgfsck \
 	bridge \
 	cfumass \
@@ -24,6 +25,7 @@ CONFS=	DAEMON \
 	fsck \
 	growfs \
 	growfs_fstab \
+	growfs_postboot \
 	hostid \
 	hostid_save \
 	hostname \
@@ -36,7 +38,6 @@ CONFS=	DAEMON \
 	linux \
 	local \
 	localpkg \
-	mixer \
 	motd \
 	mountcritlocal \
 	mountcritremote \
@@ -89,15 +90,18 @@ ACCT+=		utx
 .endif
 .endif
 
+.if ${MACHINE} == "i386" || ${MACHINE} == "amd64" || \
+    ${MACHINE} == "arm64"
 CONFGROUPS.${MK_ACPI}+=		ACPI
 ACPIPACKAGE=			acpi
 ACPI=		power_profile
+.endif
 
+.if ${MACHINE} == "i386"
 CONFGROUPS.${MK_APM}+=		APM
 APMPACKAGE=			apm
-APM=		apm
-.if ${MACHINE} == "i386"
-APM+=		apmd
+APM=		apm \
+		apmd
 .endif
 
 CONFGROUPS.${MK_AUDIT}+=	AUDIT
@@ -301,9 +305,10 @@ CONFGROUPS.${MK_VI}+=		VI
 VIPACKAGE=			vi
 VI=		virecover
 
-CONFGROUPS.${MK_CUSE}+=		VOSS
-VOSSPACKAGE=			sound
-VOSS=		virtual_oss
+CONFGROUPS.${MK_SOUND}+=	SOUND
+SOUNDPACKAGE=			sound
+SOUND=		mixer \
+		virtual_oss
 
 CONFGROUPS.${MK_WIRELESS}+=	HOSTAPD
 HOSTAPDPACKAGE=			hostapd

@@ -1,5 +1,6 @@
 /*-
- * Copyright (c) 2020-2025 The FreeBSD Foundation
+ * Copyright (c) 2020-2026 The FreeBSD Foundation
+ * Copyright (c) 2026 Bjoern A. Zeeb
  *
  * This software was developed by Björn Zeeb under sponsorship from
  * the FreeBSD Foundation.
@@ -51,8 +52,16 @@ extern int linuxkpi_debug_80211;
 #define	IMPROVE(fmt, ...)	if (linuxkpi_debug_80211 & D80211_IMPROVE) \
     printf("%s:%d: XXX LKPI80211 IMPROVE " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
 
-
-/* 9.4.2.55 Management MIC element (CMAC-256, GMAC-128, and GMAC-256). */
+/* 802.11-2024, 9.4.2.53 MME. */
+/* BIP-CMAC-128 */
+struct ieee80211_mmie {
+	uint8_t		element_id;
+	uint8_t		length;
+	uint16_t	key_id;
+	uint8_t		ipn[6];
+	uint8_t		mic[8];
+};
+/* BIP-CMAC-256, BIP-GMAC-128, BIP-GMAC-256 */
 struct ieee80211_mmie_16 {
 	uint8_t		element_id;
 	uint8_t		length;
@@ -92,8 +101,6 @@ struct ieee80211_mmie_16 {
 
 #define	IEEE80211_MAX_RTS_THRESHOLD		2346	/* net80211::IEEE80211_RTS_MAX */
 
-#define	IEEE80211_MIN_ACTION_SIZE		23	/* ? */
-
 /* Wi-Fi Peer-to-Peer (P2P) Technical Specification */
 #define	IEEE80211_P2P_OPPPS_CTWINDOW_MASK	0x7f
 #define	IEEE80211_P2P_OPPPS_ENABLE_BIT		BIT(7)
@@ -108,7 +115,18 @@ struct ieee80211_mmie_16 {
 #define	IEEE80211_QOS_CTL_MESH_CONTROL_PRESENT	0x0100
 
 enum ieee80211_rate_flags {
-	IEEE80211_RATE_SHORT_PREAMBLE		= BIT(0),
+	IEEE80211_RATE_SHORT_PREAMBLE		= BIT(0),	/* 2.4Ghz, CCK */
+	IEEE80211_RATE_SUPPORTS_5MHZ		= BIT(1),
+	IEEE80211_RATE_SUPPORTS_10MHZ		= BIT(2),
+	IEEE80211_RATE_ERP_G			= BIT(3),
+
+	/*
+	 * According to documentation these are flags initialized internally.
+	 * See lkpi_wiphy_band_annotate().
+	 */
+	IEEE80211_RATE_MANDATORY_A		= BIT(4),
+	IEEE80211_RATE_MANDATORY_G		= BIT(5),
+	IEEE80211_RATE_MANDATORY_B		= BIT(6),
 };
 
 enum ieee80211_rate_control_changed_flags {
@@ -140,6 +158,13 @@ enum ieee80211_vht_max_ampdu_len_exp {
 	IEEE80211_VHT_MAX_AMPDU_256K		= 5,
 	IEEE80211_VHT_MAX_AMPDU_512K		= 6,
 	IEEE80211_VHT_MAX_AMPDU_1024K		= 7,
+};
+
+/* 802.11-2020, 9.6.22 VHT Action frame details. */
+enum ieee80211_vht_actioncode {
+	/* VHT Compressed Beamforming		= 0, */
+	WLAN_VHT_ACTION_GROUPID_MGMT		= 1,
+	/* Operating Mode Notification		= 2, */
 };
 
 #define	IEEE80211_WEP_IV_LEN			3	/* net80211: IEEE80211_WEP_IVLEN */
@@ -200,6 +225,7 @@ enum ieee80211_min_mpdu_start_spacing {
 #define	IEEE80211_FCTL_TODS			(IEEE80211_FC1_DIR_TODS << 8)
 #define	IEEE80211_FCTL_MOREFRAGS		(IEEE80211_FC1_MORE_FRAG << 8)
 #define	IEEE80211_FCTL_PM			(IEEE80211_FC1_PWR_MGT << 8)
+#define	IEEE80211_FCTL_MOREDATA			(IEEE80211_FC1_MORE_DATA << 8)
 
 #define	IEEE80211_FTYPE_MGMT			IEEE80211_FC0_TYPE_MGT
 #define	IEEE80211_FTYPE_CTL			IEEE80211_FC0_TYPE_CTL
@@ -448,9 +474,20 @@ enum ieee80211_tx_info_flags {
 	IEEE80211_TX_CTL_STBC			= BIT(20),
 } __packed;
 
+#define	IEEE80211_TX_INFO_FLAGS						\
+    "\010\1CTL_AMPDU\2CTL_ASSIGN_SEQ\3CTL_NO_ACK\4CTL_SEND_AFTER_DTIM"	\
+    "\5CTL_TX_OFFCHAN\6CTL_REQ_TX_STATUS"				\
+    "\7STATUS_EOSP\10STAT_ACK\11STAT_AMPDU\12STAT_AMPDU_NO_BACK"	\
+    "\13STAT_TX_FILTERED\14STAT_NOACK_TRANSMITTED"			\
+    "\15CTL_FIRST_FRAGMENT\16INTFL_DONT_ENCRYPT\17CTL_NO_CCK_RATE"	\
+    "\20CTL_INJECTED\21CTL_HW_80211_ENCAP\22CTL_USE_MINRATE"		\
+    "\23CTL_RATE_CTRL_PROBE\24CTL_LDPC\25CTL_STBC"
+
 enum ieee80211_tx_status_flags {
 	IEEE80211_TX_STATUS_ACK_SIGNAL_VALID	= BIT(0),
 };
+#define	IEEE80211_TX_STATUS_FLAGS					\
+    "\010\1ACK_SIGNAL_VALID"
 
 enum ieee80211_tx_control_flags {
 	/* XXX TODO .. right shift numbers */
@@ -459,18 +496,6 @@ enum ieee80211_tx_control_flags {
 	IEEE80211_TX_CTRL_RATE_INJECT		= BIT(2),
 	IEEE80211_TX_CTRL_DONT_USE_RATE_MASK	= BIT(3),
 	IEEE80211_TX_CTRL_MLO_LINK		= 0xF0000000,	/* This is IEEE80211_LINK_UNSPECIFIED on the high bits. */
-};
-
-enum ieee80211_tx_rate_flags {
-	/* XXX TODO .. right shift numbers */
-	IEEE80211_TX_RC_40_MHZ_WIDTH		= BIT(0),
-	IEEE80211_TX_RC_80_MHZ_WIDTH		= BIT(1),
-	IEEE80211_TX_RC_160_MHZ_WIDTH		= BIT(2),
-	IEEE80211_TX_RC_GREEN_FIELD		= BIT(3),
-	IEEE80211_TX_RC_MCS			= BIT(4),
-	IEEE80211_TX_RC_SHORT_GI		= BIT(5),
-	IEEE80211_TX_RC_VHT_MCS			= BIT(6),
-	IEEE80211_TX_RC_USE_SHORT_PREAMBLE	= BIT(7),
 };
 
 #define	IEEE80211_RNR_TBTT_PARAMS_PSD_RESERVED	-128
@@ -522,6 +547,7 @@ enum ieee80211_sa_query {
 enum ieee80211_category {
 	WLAN_CATEGORY_BACK		= 3,
 	WLAN_CATEGORY_SA_QUERY		= 8,	/* net80211::IEEE80211_ACTION_CAT_SA_QUERY */
+	WLAN_CATEGORY_VHT		= 21,
 };
 
 /* 80211-2020 9.3.3.2 Format of Management frames */
@@ -546,6 +572,14 @@ struct ieee80211_mgmt {
 			uint16_t	listen_interval;
 			uint8_t		variable[0];
 		} __packed assoc_req;
+		/* 9.3.3.6 Association Response frame format */
+		/* 9.3.3.8 Reassociation Response frame format */
+		struct {
+			uint16_t	capab_info;
+			uint16_t	status_code;
+			uint16_t	aid;
+			uint8_t		variable[0];
+		} __packed assoc_resp, reassoc_resp;
 		/* 9.3.3.10 Probe Request frame format */
 		struct {
 			uint8_t		variable[0];
@@ -614,6 +648,8 @@ struct ieee80211_mgmt {
 	} u;
 } __packed __aligned(2);
 
+#define	IEEE80211_MIN_ACTION_SIZE	offsetof(struct ieee80211_mgmt, u.action.u)
+
 struct ieee80211_cts {		/* net80211::ieee80211_frame_cts */
         __le16		frame_control;
         __le16		duration;
@@ -662,6 +698,7 @@ enum ieee80211_eid {
 	WLAN_EID_EXT_SUPP_RATES			= 50,
 	WLAN_EID_EXT_NON_INHERITANCE		= 56,
 	WLAN_EID_EXT_CHANSWITCH_ANN		= 60,
+	WLAN_EID_HT_OPERATION			= 61,	/* IEEE80211_ELEMID_HTINFO */
 	WLAN_EID_MULTIPLE_BSSID			= 71,	/* IEEE80211_ELEMID_MULTIBSSID */
 	WLAN_EID_MULTI_BSSID_IDX		= 85,
 	WLAN_EID_EXT_CAPABILITY			= 127,
@@ -712,15 +749,15 @@ struct ieee80211_trigger {
 /* Table 9-29c-Trigger Type subfield encoding */
 enum {
 	IEEE80211_TRIGGER_TYPE_BASIC		= 0x0,
+	IEEE80211_TRIGGER_TYPE_BFRP		= 0x1,
 	IEEE80211_TRIGGER_TYPE_MU_BAR		= 0x2,
+	IEEE80211_TRIGGER_TYPE_MU_RTS		= 0x3,
+	IEEE80211_TRIGGER_TYPE_BSRP		= 0x4,
+	IEEE80211_TRIGGER_TYPE_BQRP		= 0x6,
+	IEEE80211_TRIGGER_TYPE_NFRP		= 0x7,
 #if 0
 	/* Not seen yet. */
-	BFRP					= 0x1,
-	MU-RTS					= 0x3,
-	BSRP					= 0x4,
 	GCR MU-BAR				= 0x5,
-	BQRP					= 0x6,
-	NFRP					= 0x7,
 	/* 0x8..0xf reserved */
 #endif
 	IEEE80211_TRIGGER_TYPE_MASK		= 0xf

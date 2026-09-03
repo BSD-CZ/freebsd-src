@@ -1886,8 +1886,7 @@ bad:
 	if (es->reg)
 		bus_release_resource(dev, es->regtype, es->regid, es->reg);
 	mtx_destroy(&es->lock);
-	if (es)
-		free(es, M_DEVBUF);
+	free(es, M_DEVBUF);
 	return (ENXIO);
 }
 
@@ -1926,7 +1925,7 @@ static device_method_t es_methods[] = {
 	DEVMETHOD(device_probe,		es_pci_probe),
 	DEVMETHOD(device_attach,	es_pci_attach),
 	DEVMETHOD(device_detach,	es_pci_detach),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static driver_t es_driver = {

@@ -56,10 +56,15 @@ nuageinit_start()
 		OpenStack*)
 			mkdir -p /media/nuageinit/openstack/latest
 			ifaces=$(ifconfig -l ether)
-			set -- $ifaces
-			dhclient -p /tmp/ephemeraldhcp.pid $1
+			for iface in $ifaces; do
+				dhclient -p /tmp/ephemeraldhcp.$iface.pid $iface
+			done
+			pids=$(cat /tmp/ephemeraldhcp.*.pid)
+			left=$(pwait -op $pids 2>/dev/null)
+			for iface in $left; do
+				kill -15 $left
+			done
 			fetch_openstack
-			pkill -F /tmp/ephemeraldhcp.pid
 			citype=config-2
 			;;
 		*)
@@ -84,6 +89,10 @@ nuageinit_start()
 		/usr/libexec/nuageinit /media/nuageinit $citype 2>&1 | tee -a /var/log/nuageinit.log
 		;;
 	esac
+	if [ -x /var/cache/nuageinit/bootcmds ]; then
+		echo "Executing 'bootcmd'" | tee -a /var/log/nuageinit.log
+		/var/cache/nuageinit/bootcmds 2>&1 | tee -a /var/log/nuageinit.log
+	fi
 	if [ -n "$drive" ]; then
 		umount /media/nuageinit
 		rmdir /media/nuageinit

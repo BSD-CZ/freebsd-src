@@ -804,7 +804,6 @@ atiixp_chan_trigger(kobj_t obj, void *data, int go)
 	default:
 		atiixp_unlock(sc);
 		return (0);
-		break;
 	}
 
 	/* Update bus busy status */
@@ -1403,7 +1402,7 @@ static device_method_t atiixp_methods[] = {
 	DEVMETHOD(device_detach,	atiixp_pci_detach),
 	DEVMETHOD(device_suspend,	atiixp_pci_suspend),
 	DEVMETHOD(device_resume,	atiixp_pci_resume),
-	{ 0, 0 }
+	DEVMETHOD_END
 };
 
 static driver_t atiixp_driver = {

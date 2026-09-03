@@ -51,6 +51,7 @@
 #include <sys/mman.h>
 #include <sys/stack.h>
 #include <sys/stdarg.h>
+#include <sys/syscall.h>
 #include <sys/sysent.h>
 #include <sys/time.h>
 #include <sys/user.h>
@@ -98,6 +99,7 @@
 #include <linux/interval_tree_generic.h>
 #include <linux/printk.h>
 #include <linux/seq_file.h>
+#include <linux/uuid.h>
 
 #if defined(__i386__) || defined(__amd64__)
 #include <asm/smp.h>
@@ -163,6 +165,20 @@ unsigned long linux_timer_hz_mask;
 
 wait_queue_head_t linux_bit_waitq;
 wait_queue_head_t linux_var_waitq;
+
+const guid_t guid_null;
+
+enum system_states system_state = SYSTEM_RUNNING;
+
+struct task_struct *
+__lkpi_current(void)
+{
+	struct thread *td;
+
+	td = curthread;
+	linux_set_current(td);
+	return ((struct task_struct *)td->td_lkpi_task);
+}
 
 int
 panic_cmp(struct rb_node *one, struct rb_node *two)
@@ -921,19 +937,39 @@ linux_file_ioctl_sub(struct file *fp, struct linux_file *filp,
 	struct task_struct *task = current;
 	unsigned size;
 	int error;
+	bool direct;
 
 	size = IOCPARM_LEN(cmd);
 	/* refer to logic in sys_ioctl() */
+	direct = false;
 	if (size > 0) {
 		/*
 		 * Setup hint for linux_copyin() and linux_copyout().
 		 *
-		 * Background: Linux code expects a user-space address
-		 * while FreeBSD supplies a kernel-space address.
+		 * Background: Linux kernel code expects to operate on
+		 * userspace addresses, but FreeBSD's kern_ioctl()
+		 * will generally provide a kernel address.  For the
+		 * native process ABI, where we know how to find the
+		 * original address, we reach directly into the system
+		 * call args to get it.  Then, if the Linux driver
+		 * copied out to that address, we copy the whole block
+		 * back into the kernel buffer allocated by
+		 * kern_ioctl() so that kern_ioctl() itself doesn't
+		 * clobber the driver's data.
+		 *
+		 * Otherwise, fall back to the LINUX_IOCTL_MIN_PTR
+		 * hack.
 		 */
 		task->bsd_ioctl_data = data;
 		task->bsd_ioctl_len = size;
-		data = (void *)LINUX_IOCTL_MIN_PTR;
+		if ((td->td_pflags & TDP_KTHREAD) == 0 &&
+		    SV_PROC_ABI(td->td_proc) == SV_ABI_FREEBSD &&
+		    td->td_sa.code == SYS_ioctl) {
+			direct = true;
+			data = (void *)(uintptr_t)td->td_sa.args[2];
+		} else {
+			data = (void *)LINUX_IOCTL_MIN_PTR;
+		}
 	} else {
 		/* fetch user-space pointer */
 		data = *(void **)data;
@@ -963,11 +999,30 @@ linux_file_ioctl_sub(struct file *fp, struct linux_file *filp,
 			error = ENOTTY;
 		}
 	}
+	if (error == 0 && size > 0 && (cmd & IOC_OUT) != 0 && direct) {
+		void *xdata;
+		int error1;
+
+		/*
+		 * Ensure that the copyout in sys_generic.c copies
+		 * over the data which is possibly modified by the
+		 * driver.  A possible error from the copyin() is
+		 * ignored since it is formally possible for the memory
+		 * to become unaccessible in the meantime.  Do the copying
+		 * through the intermediate buffer instead of copying
+		 * directly to bsd_ioctl_data, to ensure atomicity of
+		 * the change with respect to the error.
+		 */
+		xdata = malloc(size, M_TEMP, M_WAITOK);
+		error1 = copyin(data, xdata, size);
+		if (error1 == 0)
+			memcpy(task->bsd_ioctl_data, xdata, size);
+		free(xdata, M_TEMP);
+	}
 	if (size > 0) {
 		task->bsd_ioctl_data = NULL;
 		task->bsd_ioctl_len = 0;
 	}
-
 	if (error == EWOULDBLOCK) {
 		/* update kqfilter status, if any */
 		linux_file_kqfilter_poll(filp,
@@ -1894,54 +1949,166 @@ void
 lkpi_hex_dump(int(*_fpf)(void *, const char *, ...), void *arg1,
     const char *level, const char *prefix_str,
     const int prefix_type, const int rowsize, const int groupsize,
-    const void *buf, size_t len, const bool ascii)
+    const void *buf, size_t len, const bool ascii, const bool trailing_newline)
 {
 	typedef const struct { long long value; } __packed *print_64p_t;
 	typedef const struct { uint32_t value; } __packed *print_32p_t;
 	typedef const struct { uint16_t value; } __packed *print_16p_t;
 	const void *buf_old = buf;
-	int row;
+	int row, linelen, ret;
 
 	while (len > 0) {
-		if (level != NULL)
-			_fpf(arg1, "%s", level);
-		if (prefix_str != NULL)
-			_fpf(arg1, "%s ", prefix_str);
+		linelen = 0;
+		if (level != NULL) {
+			ret = _fpf(arg1, "%s", level);
+			if (ret < 0)
+				break;
+			linelen += ret;
+		}
+		if (prefix_str != NULL) {
+			ret = _fpf(
+			    arg1, "%s%s", linelen ? " " : "", prefix_str);
+			if (ret < 0)
+				break;
+			linelen += ret;
+		}
 
 		switch (prefix_type) {
 		case DUMP_PREFIX_ADDRESS:
-			_fpf(arg1, "[%p] ", buf);
+			ret = _fpf(
+			    arg1, "%s[%p]", linelen ? " " : "", buf);
+			if (ret < 0)
+				return;
+			linelen += ret;
 			break;
 		case DUMP_PREFIX_OFFSET:
-			_fpf(arg1, "[%#tx] ", ((const char *)buf -
-			    (const char *)buf_old));
+			ret = _fpf(
+			    arg1, "%s[%#tx]", linelen ? " " : "",
+			    ((const char *)buf - (const char *)buf_old));
+			if (ret < 0)
+				return;
+			linelen += ret;
 			break;
 		default:
 			break;
 		}
 		for (row = 0; row != rowsize; row++) {
 			if (groupsize == 8 && len > 7) {
-				_fpf(arg1, "%016llx ", ((print_64p_t)buf)->value);
+				ret = _fpf(
+				    arg1, "%s%016llx", linelen ? " " : "",
+				    ((print_64p_t)buf)->value);
+				if (ret < 0)
+					return;
+				linelen += ret;
 				buf = (const uint8_t *)buf + 8;
 				len -= 8;
 			} else if (groupsize == 4 && len > 3) {
-				_fpf(arg1, "%08x ", ((print_32p_t)buf)->value);
+				ret = _fpf(
+				    arg1, "%s%08x", linelen ? " " : "",
+				    ((print_32p_t)buf)->value);
+				if (ret < 0)
+					return;
+				linelen += ret;
 				buf = (const uint8_t *)buf + 4;
 				len -= 4;
 			} else if (groupsize == 2 && len > 1) {
-				_fpf(arg1, "%04x ", ((print_16p_t)buf)->value);
+				ret = _fpf(
+				    arg1, "%s%04x", linelen ? " " : "",
+				    ((print_16p_t)buf)->value);
+				if (ret < 0)
+					return;
+				linelen += ret;
 				buf = (const uint8_t *)buf + 2;
 				len -= 2;
 			} else if (len > 0) {
-				_fpf(arg1, "%02x ", *(const uint8_t *)buf);
+				ret = _fpf(
+				    arg1, "%s%02x", linelen ? " " : "",
+				    *(const uint8_t *)buf);
+				if (ret < 0)
+					return;
+				linelen += ret;
 				buf = (const uint8_t *)buf + 1;
 				len--;
 			} else {
 				break;
 			}
 		}
-		_fpf(arg1, "\n");
+		if (len > 0 && trailing_newline) {
+			ret = _fpf(arg1, "\n");
+			if (ret < 0)
+				break;
+		}
 	}
+}
+
+struct hdtb_context {
+	char	*linebuf;
+	size_t	 linebuflen;
+	int	 written;
+};
+
+static int
+hdtb_cb(void *arg, const char *format, ...)
+{
+	struct hdtb_context *context;
+	int written;
+	va_list args;
+
+	context = arg;
+
+	va_start(args, format);
+	written = vsnprintf(
+	    context->linebuf, context->linebuflen, format, args);
+	va_end(args);
+
+	if (written < 0)
+		return (written);
+
+	/*
+	 * Linux' hex_dump_to_buffer() function has the same behaviour as
+	 * snprintf() basically. Therefore, it returns the number of bytes it
+	 * would have written if the destination buffer was large enough.
+	 *
+	 * If the destination buffer was exhausted, lkpi_hex_dump() will
+	 * continue to call this callback but it will only compute the bytes it
+	 * would have written but write nothing to that buffer.
+	 */
+	context->written += written;
+
+	if (written < context->linebuflen) {
+		context->linebuf += written;
+		context->linebuflen -= written;
+	} else {
+		context->linebuf += context->linebuflen;
+		context->linebuflen = 0;
+	}
+
+	return (written);
+}
+
+int
+lkpi_hex_dump_to_buffer(const void *buf, size_t len, int rowsize,
+    int groupsize, char *linebuf, size_t linebuflen, bool ascii)
+{
+	int written;
+	struct hdtb_context context;
+
+	context.linebuf = linebuf;
+	context.linebuflen = linebuflen;
+	context.written = 0;
+
+	if (rowsize != 16 && rowsize != 32)
+		rowsize = 16;
+
+	len = min(len, rowsize);
+
+	lkpi_hex_dump(
+	    hdtb_cb, &context, NULL, NULL, DUMP_PREFIX_NONE,
+	    rowsize, groupsize, buf, len, ascii, false);
+
+	written = context.written;
+
+	return (written);
 }
 
 static void
@@ -2750,6 +2917,7 @@ linux_compat_init(void *arg)
 	boot_cpu_data.x86 = CPUID_TO_FAMILY(cpu_id);
 	boot_cpu_data.x86_model = CPUID_TO_MODEL(cpu_id);
 	boot_cpu_data.x86_vendor = x86_vendor;
+	boot_cpu_data.x86_stepping = CPUID_TO_STEPPING(cpu_id);
 
 	__cpu_data = kmalloc_array(mp_maxid + 1,
 	    sizeof(*__cpu_data), M_WAITOK | M_ZERO);

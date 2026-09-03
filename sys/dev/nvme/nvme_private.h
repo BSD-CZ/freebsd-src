@@ -112,7 +112,9 @@ struct nvme_request {
 	struct memdesc			payload;
 	nvme_cb_fn_t			cb_fn;
 	void				*cb_arg;
-	int32_t				retries;
+	int16_t				retries;
+	uint16_t			ioq;
+#define NVME_IOQ_DEFAULT		0xffff
 	bool				payload_valid;
 	bool				timeout;
 	bool				spare[2];		/* Future use */
@@ -163,6 +165,8 @@ struct nvme_qpair {
 
 	uint32_t		num_entries;
 	uint32_t		num_trackers;
+	uint32_t		sqe_shift;
+	uint16_t		cid_base;	/* CID offset for SHARED_TAGS IO queues */
 	uint32_t		sq_tdbl_off;
 	uint32_t		cq_hdbl_off;
 
@@ -218,13 +222,27 @@ struct nvme_controller {
 	int			domain;
 	uint32_t		ready_timeout_in_ms;
 	uint32_t		quirks;
+	uint8_t			max_identify_cns;	/* max CNS value for IDENTIFY (0 = no limit) */
+	uint8_t			io_sqes;
 #define	QUIRK_DELAY_B4_CHK_RDY	1		/* Can't touch MMIO on disable */
 #define	QUIRK_DISABLE_TIMEOUT	2		/* Disable broken completion timeout feature */
 #define	QUIRK_INTEL_ALIGNMENT	4		/* Pre NVMe 1.3 performance alignment */
 #define QUIRK_AHCI		8		/* Attached via AHCI redirect */
+#define	QUIRK_APPLE_IDENTIFY_CNS_BROKEN		0x10	/* Reject IDENTIFY with CNS >= max_identify_cns */
+#define	NVME_APPLE_ANS2_MAX_CNS			1	/* T2: highest CNS accepted (Identify Controller) */
+#define	QUIRK_APPLE_SHARED_CID_SPACE		0x20	/* Admin/IO share a single CID table */
+#define	QUIRK_APPLE_NO_ASYNC_EVENT		0x40	/* Skip NVMe async event requests */
+#define	QUIRK_APPLE_SINGLE_VECTOR		0x80	/* Single MSI vector, one IO queue */
+#define	QUIRK_EMPTY_NAMESPACE_CHANGED_LOG	0x100	/* Change Namespace List Log is always empty */
+#define	QUIRK_APPLE_S3X_NS1_ONLY		0x200	/* Ignore Apple-internal namespace 2 */
+#define	QUIRK_APPLE_128_BYTE_SQES		0x400	/* T2 uses 128-byte I/O SQEs */
+#define	QUIRK_PCIE_FLR_ON_FATAL			0x800	/* Use FLR for a fatal controller */
+#define	QUIRK_APPLE_S3X_SERIALIZE		0x1000	/* One S3X I/O at a time */
 
-	bus_space_tag_t		bus_tag;
-	bus_space_handle_t	bus_handle;
+/* Values programmed into CC.IOSQES (log2 of the SQE size in bytes). */
+#define	NVME_IOSQES_64				6
+#define	NVME_IOSQES_128				7
+
 	int			resource_id;
 	struct resource		*resource;
 
@@ -284,8 +302,6 @@ struct nvme_controller {
 	struct nvme_qpair	adminq;
 	struct nvme_qpair	*ioq;
 
-	struct nvme_registers		*regs;
-
 	struct nvme_controller_data	cdata;
 	struct nvme_namespace		ns[NVME_MAX_NAMESPACES];
 
@@ -298,8 +314,8 @@ struct nvme_controller {
 	struct nvme_async_event_request	aer[NVME_MAX_ASYNC_EVENTS];
 
 	uint32_t			is_resetting;
-	u_int				fail_on_reset;
 
+	bool				fail_on_reset;
 	bool				is_failed;
 	bool				is_failed_admin;
 	bool				is_dying;
@@ -324,24 +340,44 @@ struct nvme_controller {
 	counter_u64_t			alignment_splits;
 };
 
+static inline uint32_t
+nvme_ctrlr_num_namespaces(const struct nvme_controller *ctrlr)
+{
+	uint32_t nn;
+
+	nn = min(ctrlr->cdata.nn, NVME_MAX_NAMESPACES);
+	if ((ctrlr->quirks & QUIRK_APPLE_S3X_NS1_ONLY) != 0)
+		nn = min(nn, 1U);
+	return (nn);
+}
+
+static inline bool
+nvme_ctrlr_nsid_visible(const struct nvme_controller *ctrlr, uint32_t nsid)
+{
+	return (nsid >= 1 && nsid <= nvme_ctrlr_num_namespaces(ctrlr));
+}
+
+/*
+ * Access the idx'th submission queue entry.
+ * sqe_shift is 0 for standard 64-byte SQEs and 1 for 128-byte SQEs.
+ */
+#define	NVME_SQE(qpair, idx)	(&(qpair)->cmd[(idx) << (qpair)->sqe_shift])
+
 #define nvme_mmio_offsetof(reg)						       \
 	offsetof(struct nvme_registers, reg)
 
 #define nvme_mmio_read_4(sc, reg)					       \
-	bus_space_read_4((sc)->bus_tag, (sc)->bus_handle,		       \
-	    nvme_mmio_offsetof(reg))
+	bus_read_4((sc)->resource, nvme_mmio_offsetof(reg))
 
 #define nvme_mmio_write_4(sc, reg, val)					       \
-	bus_space_write_4((sc)->bus_tag, (sc)->bus_handle,		       \
-	    nvme_mmio_offsetof(reg), val)
+	bus_write_4((sc)->resource, nvme_mmio_offsetof(reg), val)
 
 #define nvme_mmio_write_8(sc, reg, val)					       \
 	do {								       \
-		bus_space_write_4((sc)->bus_tag, (sc)->bus_handle,	       \
-		    nvme_mmio_offsetof(reg), val & 0xFFFFFFFF); 	       \
-		bus_space_write_4((sc)->bus_tag, (sc)->bus_handle,	       \
-		    nvme_mmio_offsetof(reg)+4,				       \
-		    (val & 0xFFFFFFFF00000000ULL) >> 32);		       \
+		bus_write_4((sc)->resource, nvme_mmio_offsetof(reg),	       \
+		    (val) & 0xFFFFFFFF);				       \
+		bus_write_4((sc)->resource, nvme_mmio_offsetof(reg) + 4,       \
+		    ((val) & 0xFFFFFFFF00000000ULL) >> 32);		       \
 	} while (0);
 
 #define nvme_printf(ctrlr, fmt, args...)	\
@@ -491,6 +527,7 @@ _nvme_allocate_request(const int how, nvme_cb_fn_t cb_fn, void *cb_arg)
 
 	req = malloc(sizeof(*req), M_NVME, how | M_ZERO);
 	if (req != NULL) {
+		req->ioq = NVME_IOQ_DEFAULT;
 		req->cb_fn = cb_fn;
 		req->cb_arg = cb_arg;
 		req->timeout = true;
@@ -499,11 +536,13 @@ _nvme_allocate_request(const int how, nvme_cb_fn_t cb_fn, void *cb_arg)
 }
 
 static __inline struct nvme_request *
-nvme_allocate_request_vaddr(void *payload, uint32_t payload_size,
+nvme_allocate_request_vaddr(void *payload, size_t payload_size,
     const int how, nvme_cb_fn_t cb_fn, void *cb_arg)
 {
 	struct nvme_request *req;
 
+	KASSERT(payload_size <= UINT32_MAX,
+	    ("payload size %zu exceeds maximum", payload_size));
 	req = _nvme_allocate_request(how, cb_fn, cb_arg);
 	if (req != NULL) {
 		req->payload = memdesc_vaddr(payload, payload_size);
@@ -551,6 +590,22 @@ nvme_allocate_request_ccb(union ccb *ccb, const int how, nvme_cb_fn_t cb_fn,
 
 #define nvme_free_request(req)	free(req, M_NVME)
 
+static __inline void
+nvme_request_set_ioq(struct nvme_controller *ctrlr, struct nvme_request *req,
+    uint16_t ioq)
+{
+	/*
+	 * Note: NVMe queues are numbered 1-65535. The ioq here is numbered
+	 * 0-65534 to avoid off-by-one bugs, with 65535 being reserved for
+	 * DEFAULT.
+	 */
+	KASSERT(ioq == NVME_IOQ_DEFAULT || ioq < ctrlr->num_io_queues,
+	    ("ioq %d out of range 0..%d", ioq, ctrlr->num_io_queues));
+	if (ioq < 0 || ioq >= ctrlr->num_io_queues)
+		ioq = NVME_IOQ_DEFAULT;
+	req->ioq = ioq;
+}
+
 void	nvme_notify_async(struct nvme_controller *ctrlr,
 	    const struct nvme_completion *async_cpl,
 	    uint32_t log_page_id, void *log_page_buffer,
@@ -562,5 +617,11 @@ void	nvme_ctrlr_poll(struct nvme_controller *ctrlr);
 
 int	nvme_ctrlr_suspend(struct nvme_controller *ctrlr);
 int	nvme_ctrlr_resume(struct nvme_controller *ctrlr);
+
+static inline bool
+nvme_is_storage_device_default(device_t dev)
+{
+	return (true);
+}
 
 #endif /* __NVME_PRIVATE_H__ */

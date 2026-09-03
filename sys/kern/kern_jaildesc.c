@@ -72,6 +72,40 @@ static const struct fileops jaildesc_ops = {
 };
 
 /*
+ * Retrieve a prison from a jail descriptor.  If prp is not NULL, then the
+ * prison will be held and subsequently returned, and must be released by the
+ * caller.  This differs from jaildesc_get_prison in that it doesn't actually
+ * require the caller to take the struct prison, which we use internally when
+ * the caller doesn't necessarily need it- it might just want to check validity.
+ */
+static int
+jaildesc_get_prison_impl(struct file *fp, struct prison **prp)
+{
+	struct prison *pr;
+	struct jaildesc *jd;
+
+	if (fp->f_type != DTYPE_JAILDESC)
+		return (EINVAL);
+
+	jd = fp->f_data;
+	JAILDESC_LOCK(jd);
+	pr = jd->jd_prison;
+	if (pr == NULL || !prison_isvalid(pr)) {
+		JAILDESC_UNLOCK(jd);
+		return (ENOENT);
+	}
+
+	if (prp != NULL) {
+		prison_hold(pr);
+		*prp = pr;
+	}
+
+	JAILDESC_UNLOCK(jd);
+
+	return (0);
+}
+
+/*
  * Given a jail descriptor number, return its prison and/or its
  * credential.  They are returned held, and will need to be released
  * by the caller.
@@ -81,33 +115,23 @@ jaildesc_find(struct thread *td, int fd, struct prison **prp,
     struct ucred **ucredp)
 {
 	struct file *fp;
-	struct jaildesc *jd;
-	struct prison *pr;
 	int error;
 
 	error = fget(td, fd, &cap_no_rights, &fp);
 	if (error != 0)
 		return (error);
-	if (fp->f_type != DTYPE_JAILDESC) {
-		error = EINVAL;
-		goto out;
+
+	error = jaildesc_get_prison_impl(fp, prp);
+	if (error == 0) {
+		/*
+		 * jaildesc_get_prison validated the file and held the prison
+		 * for us if the caller wants it, so we just need to grab the
+		 * ucred on the way out.
+		 */
+		if (ucredp != NULL)
+			*ucredp = crhold(fp->f_cred);
 	}
-	jd = fp->f_data;
-	JAILDESC_LOCK(jd);
-	pr = jd->jd_prison;
-	if (pr == NULL || !prison_isvalid(pr)) {
-		error = ENOENT;
-		JAILDESC_UNLOCK(jd);
-		goto out;
-	}
-	if (prp != NULL) {
-		prison_hold(pr);
-		*prp = pr;
-	}
-	JAILDESC_UNLOCK(jd);
-	if (ucredp != NULL)
-		*ucredp = crhold(fp->f_cred);
- out:
+
 	fdrop(fp, td);
 	return (error);
 }
@@ -129,20 +153,29 @@ jaildesc_alloc(struct thread *td, struct file **fpp, int *fdp, int owning)
 		if (error != 0)
 			return (error);
 	}
-	jd = malloc(sizeof(*jd), M_JAILDESC, M_WAITOK | M_ZERO);
 	error = falloc_caps(td, &fp, fdp, 0, NULL);
-	if (error != 0) {
-		free(jd, M_JAILDESC);
+	if (error != 0)
 		return (error);
-	}
-	finit(fp, priv_check_cred(fp->f_cred, PRIV_JAIL_SET) == 0 ?
-	    FREAD | FWRITE : FREAD, DTYPE_JAILDESC, jd, &jaildesc_ops);
+	jd = malloc(sizeof(*jd), M_JAILDESC, M_WAITOK | M_ZERO);
 	JAILDESC_LOCK_INIT(jd);
 	knlist_init_mtx(&jd->jd_selinfo.si_note, &jd->jd_lock);
 	if (owning)
 		jd->jd_flags |= JDF_OWNING;
+	finit(fp, priv_check_cred(fp->f_cred, PRIV_JAIL_SET) == 0 ?
+	    FREAD | FWRITE : FREAD, DTYPE_JAILDESC, jd, &jaildesc_ops);
 	*fpp = fp;
 	return (0);
+}
+
+/*
+ * Retrieve a prison from a jail descriptor.  It will be returned held, and must
+ * be released by the caller.
+ */
+int
+jaildesc_get_prison(struct file *fp, struct prison **prp)
+{
+	MPASS(prp != NULL);
+	return (jaildesc_get_prison_impl(fp, prp));
 }
 
 /*
@@ -197,10 +230,7 @@ jaildesc_knote(struct prison *pr, long hint)
 			JAILDESC_LOCK(jd);
 			if (hint == NOTE_JAIL_REMOVE) {
 				jd->jd_flags |= JDF_REMOVED;
-				if (jd->jd_flags & JDF_SELECTED) {
-					jd->jd_flags &= ~JDF_SELECTED;
-					selwakeup(&jd->jd_selinfo);
-				}
+				selwakeup(&jd->jd_selinfo);
 			}
 			KNOTE_LOCKED(&jd->jd_selinfo.si_note, hint);
 			JAILDESC_UNLOCK(jd);
@@ -257,6 +287,7 @@ jaildesc_close(struct file *fp, struct thread *td)
 			}
 			prison_free(pr);
 		}
+		seldrain(&jd->jd_selinfo);
 		knlist_destroy(&jd->jd_selinfo.si_note);
 		JAILDESC_LOCK_DESTROY(jd);
 		free(jd, M_JAILDESC);
@@ -276,10 +307,8 @@ jaildesc_poll(struct file *fp, int events, struct ucred *active_cred,
 	JAILDESC_LOCK(jd);
 	if (jd->jd_flags & JDF_REMOVED)
 		revents |= POLLHUP;
-	if (revents == 0) {
+	else
 		selrecord(td, &jd->jd_selinfo);
-		jd->jd_flags |= JDF_SELECTED;
-	}
 	JAILDESC_UNLOCK(jd);
 	return (revents);
 }

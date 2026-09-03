@@ -63,7 +63,6 @@
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_ipsec.h"
-#include "opt_route.h"
 #include "opt_rss.h"
 #include "opt_sctp.h"
 
@@ -118,6 +117,7 @@
 #include <netinet6/mld6_var.h>
 #include <netinet6/nd6.h>
 #include <netinet6/in6_rss.h>
+#include <netinet6/ip6_mroute.h>
 #ifdef SCTP
 #include <netinet/sctp_pcb.h>
 #include <netinet6/sctp6_var.h>
@@ -219,7 +219,7 @@ VNET_PCPUSTAT_SYSUNINIT(ip6stat);
 struct rmlock in6_ifaddr_lock;
 RM_SYSINIT(in6_ifaddr_lock, &in6_ifaddr_lock, "in6_ifaddr_lock");
 
-static int ip6_hopopts_input(u_int32_t *, u_int32_t *, struct mbuf **, int *);
+static int ip6_hopopts_input(u_int32_t *, struct mbuf **, int *);
 
 /*
  * IP6 initialization: fill in IP6 protocol switch table.
@@ -390,7 +390,6 @@ ip6_destroy(void *unused __unused)
 		}
 		/* IF_ADDR_UNLOCK(ifp); */
 		in6_ifdetach_destroy(ifp);
-		mld_domifdetach(ifp);
 	}
 	IFNET_RUNLOCK();
 
@@ -399,6 +398,7 @@ ip6_destroy(void *unused __unused)
 
 	frag6_destroy();
 	nd6_destroy();
+	addrsel_policy_destroy();
 	in6_ifattach_destroy();
 
 	hashdestroy(V_in6_ifaddrhashtbl, M_IFADDR, V_in6_ifaddrhmask);
@@ -408,43 +408,23 @@ VNET_SYSUNINIT(inet6, SI_SUB_PROTO_DOMAIN, SI_ORDER_THIRD, ip6_destroy, NULL);
 #endif
 
 static int
-ip6_input_hbh(struct mbuf **mp, uint32_t *plen, uint32_t *rtalert, int *off,
+ip6_input_hbh(struct mbuf **mp, uint32_t *rtalert, int *off,
     int *nxt, int *ours)
 {
 	struct mbuf *m;
 	struct ip6_hdr *ip6;
 	struct ip6_hbh *hbh;
 
-	if (ip6_hopopts_input(plen, rtalert, mp, off)) {
+	if (ip6_hopopts_input(rtalert, mp, off)) {
 #if 0	/*touches NULL pointer*/
 		in6_ifstat_inc((*mp)->m_pkthdr.rcvif, ifs6_in_discard);
 #endif
 		goto out;	/* m have already been freed */
 	}
 
-	/* adjust pointer */
 	m = *mp;
 	ip6 = mtod(m, struct ip6_hdr *);
 
-	/*
-	 * if the payload length field is 0 and the next header field
-	 * indicates Hop-by-Hop Options header, then a Jumbo Payload
-	 * option MUST be included.
-	 */
-	if (ip6->ip6_plen == 0 && *plen == 0) {
-		/*
-		 * Note that if a valid jumbo payload option is
-		 * contained, ip6_hopopts_input() must set a valid
-		 * (non-zero) payload length to the variable plen.
-		 */
-		IP6STAT_INC(ip6s_badoptions);
-		in6_ifstat_inc(m->m_pkthdr.rcvif, ifs6_in_discard);
-		in6_ifstat_inc(m->m_pkthdr.rcvif, ifs6_in_hdrerr);
-		icmp6_error(m, ICMP6_PARAM_PROB,
-			    ICMP6_PARAMPROB_HEADER,
-			    (caddr_t)&ip6->ip6_plen - (caddr_t)ip6);
-		goto out;
-	}
 	/* ip6_hopopts_input() ensures that mbuf is contiguous */
 	hbh = (struct ip6_hbh *)(ip6 + 1);
 	*nxt = hbh->ip6h_nxt;
@@ -551,7 +531,7 @@ ip6_input(struct mbuf *m)
 	 * Drop the packet if IPv6 operation is disabled on the interface.
 	 */
 	rcvif = m->m_pkthdr.rcvif;
-	if ((ND_IFINFO(rcvif)->flags & ND6_IFF_IFDISABLED))
+	if ((rcvif->if_inet6->nd_flags & ND6_IFF_IFDISABLED))
 		goto bad;
 
 #if defined(IPSEC) || defined(IPSEC_SUPPORT)
@@ -688,21 +668,6 @@ ip6_input(struct mbuf *m)
 		in6_ifstat_inc(rcvif, ifs6_in_addrerr);
 		goto bad;
 	}
-#if 0
-	/*
-	 * Reject packets with IPv4 compatible addresses (auto tunnel).
-	 *
-	 * The code forbids auto tunnel relay case in RFC1933 (the check is
-	 * stronger than RFC1933).  We may want to re-enable it if mech-xx
-	 * is revised to forbid relaying case.
-	 */
-	if (IN6_IS_ADDR_V4COMPAT(&ip6->ip6_src) ||
-	    IN6_IS_ADDR_V4COMPAT(&ip6->ip6_dst)) {
-		IP6STAT_INC(ip6s_badscope);
-		in6_ifstat_inc(m->m_pkthdr.rcvif, ifs6_in_addrerr);
-		goto bad;
-	}
-#endif
 	/*
 	 * Try to forward the packet, but if we fail continue.
 	 * ip6_tryforward() does not generate redirects, so fall
@@ -772,6 +737,18 @@ passin:
 	if (__predict_false(IN6_IS_ADDR_UNSPECIFIED(&ip6->ip6_dst))) {
 		IP6STAT_INC(ip6s_badscope);
 		in6_ifstat_inc(rcvif, ifs6_in_addrerr);
+		goto bad;
+	}
+
+	plen = (uint32_t)ntohs(ip6->ip6_plen);
+
+	/*
+	 * We don't support Jumbograms, reject packets with plen == 0 as early
+	 * as we can.
+	 */
+	if (__predict_false(plen == 0)) {
+		IP6STAT_INC(ip6s_tooshort);
+		in6_ifstat_inc(rcvif, ifs6_in_hdrerr);
 		goto bad;
 	}
 
@@ -851,11 +828,9 @@ passin:
 	/*
 	 * Process Hop-by-Hop options header if it's contained.
 	 * m may be modified in ip6_hopopts_input().
-	 * If a JumboPayload option is included, plen will also be modified.
 	 */
-	plen = (u_int32_t)ntohs(ip6->ip6_plen);
 	if (ip6->ip6_nxt == IPPROTO_HOPOPTS) {
-		if (ip6_input_hbh(&m, &plen, &rtalert, &off, &nxt, &ours) != 0)
+		if (ip6_input_hbh(&m, &rtalert, &off, &nxt, &ours) != 0)
 			return;
 	} else
 		nxt = ip6->ip6_nxt;
@@ -889,7 +864,7 @@ passin:
 	/*
 	 * Forward if desirable.
 	 */
-	if (V_ip6_mrouter &&
+	if (V_ip6_mrouting_enabled &&
 	    IN6_IS_ADDR_MULTICAST(&ip6->ip6_dst)) {
 		/*
 		 * If we are acting as a multicast router, all
@@ -964,13 +939,12 @@ bad:
 
 /*
  * Hop-by-Hop options header processing. If a valid jumbo payload option is
- * included, the real payload length will be stored in plenp.
+ * included report an error.
  *
  * rtalertp - XXX: should be stored more smart way
  */
 static int
-ip6_hopopts_input(u_int32_t *plenp, u_int32_t *rtalertp,
-    struct mbuf **mp, int *offp)
+ip6_hopopts_input(u_int32_t *rtalertp, struct mbuf **mp, int *offp)
 {
 	struct mbuf *m = *mp;
 	int off = *offp, hbhlen;
@@ -1000,7 +974,7 @@ ip6_hopopts_input(u_int32_t *plenp, u_int32_t *rtalertp,
 	off += hbhlen;
 	hbhlen -= sizeof(struct ip6_hbh);
 	if (ip6_process_hopopts(m, (u_int8_t *)hbh + sizeof(struct ip6_hbh),
-				hbhlen, rtalertp, plenp) < 0) {
+				hbhlen, rtalertp) < 0) {
 		*mp = NULL;
 		return (-1);
 	}
@@ -1022,13 +996,11 @@ ip6_hopopts_input(u_int32_t *plenp, u_int32_t *rtalertp,
  */
 int
 ip6_process_hopopts(struct mbuf *m, u_int8_t *opthead, int hbhlen,
-    u_int32_t *rtalertp, u_int32_t *plenp)
+    u_int32_t *rtalertp)
 {
-	struct ip6_hdr *ip6;
 	int optlen = 0;
 	u_int8_t *opt = opthead;
 	u_int16_t rtalert_val;
-	u_int32_t jumboplen;
 	const int erroff = sizeof(struct ip6_hdr) + sizeof(struct ip6_hbh);
 
 	for (; hbhlen > 0; hbhlen -= optlen, opt += optlen) {
@@ -1061,71 +1033,8 @@ ip6_process_hopopts(struct mbuf *m, u_int8_t *opthead, int hbhlen,
 			*rtalertp = ntohs(rtalert_val);
 			break;
 		case IP6OPT_JUMBO:
-			/* XXX may need check for alignment */
-			if (hbhlen < IP6OPT_JUMBO_LEN) {
-				IP6STAT_INC(ip6s_toosmall);
-				goto bad;
-			}
-			if (*(opt + 1) != IP6OPT_JUMBO_LEN - 2) {
-				/* XXX stat */
-				icmp6_error(m, ICMP6_PARAM_PROB,
-				    ICMP6_PARAMPROB_HEADER,
-				    erroff + opt + 1 - opthead);
-				return (-1);
-			}
-			optlen = IP6OPT_JUMBO_LEN;
-
-			/*
-			 * IPv6 packets that have non 0 payload length
-			 * must not contain a jumbo payload option.
-			 */
-			ip6 = mtod(m, struct ip6_hdr *);
-			if (ip6->ip6_plen) {
-				IP6STAT_INC(ip6s_badoptions);
-				icmp6_error(m, ICMP6_PARAM_PROB,
-				    ICMP6_PARAMPROB_HEADER,
-				    erroff + opt - opthead);
-				return (-1);
-			}
-
-			/*
-			 * We may see jumbolen in unaligned location, so
-			 * we'd need to perform bcopy().
-			 */
-			bcopy(opt + 2, &jumboplen, sizeof(jumboplen));
-			jumboplen = (u_int32_t)htonl(jumboplen);
-
-#if 1
-			/*
-			 * if there are multiple jumbo payload options,
-			 * *plenp will be non-zero and the packet will be
-			 * rejected.
-			 * the behavior may need some debate in ipngwg -
-			 * multiple options does not make sense, however,
-			 * there's no explicit mention in specification.
-			 */
-			if (*plenp != 0) {
-				IP6STAT_INC(ip6s_badoptions);
-				icmp6_error(m, ICMP6_PARAM_PROB,
-				    ICMP6_PARAMPROB_HEADER,
-				    erroff + opt + 2 - opthead);
-				return (-1);
-			}
-#endif
-
-			/*
-			 * jumbo payload length must be larger than 65535.
-			 */
-			if (jumboplen <= IPV6_MAXPACKET) {
-				IP6STAT_INC(ip6s_badoptions);
-				icmp6_error(m, ICMP6_PARAM_PROB,
-				    ICMP6_PARAMPROB_HEADER,
-				    erroff + opt + 2 - opthead);
-				return (-1);
-			}
-			*plenp = jumboplen;
-
-			break;
+			/* We do not support the Jumbo Payload option. */
+			goto bad;
 		default:		/* unknown option */
 			if (hbhlen < IP6OPT_MINLEN) {
 				IP6STAT_INC(ip6s_toosmall);

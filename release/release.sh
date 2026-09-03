@@ -40,9 +40,26 @@ export PATH="/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin"
 VERSION=3
 
 # Prototypes that can be redefined per-chroot or per-target.
+
+# load_chroot_env(): Set up the build environment needed.
+#
+# Done as part of chroot_env().
 load_chroot_env() { }
+
+# load_target_env(): set up the build environment needed for the
+# chroot_build_target() and `${chroot_build_release}` steps.
 load_target_env() { }
+
+# buildenv_setup(): set up the build environment needed for post-chroot_setup()
 buildenv_setup() { }
+
+# chroot_cleanup(): Clean up resources setup in chroot_setup() at exit.
+#
+# This function can be built upon. `_chroot_cleanup` must be added to the end of
+# the override function, if overridden.
+chroot_cleanup() {
+	_chroot_cleanup
+} # chroot_cleanup()
 
 usage() {
 	echo "Usage: $0 [-c release.conf]"
@@ -200,9 +217,7 @@ env_check() {
 		WITH_DVD=${WITH_DVD} WITH_VMIMAGES=${WITH_VMIMAGES} \
 		WITH_CLOUDWARE=${WITH_CLOUDWARE} WITH_OCIIMAGES=${WITH_OCIIMAGES} \
 		XZ_THREADS=${XZ_THREADS} NOPKGBASE=${NOPKGBASE}"
-	if [ -n "${NO_ROOT}" ]; then
-		RELEASE_RMAKEFLAGS="${RELEASE_RMAKEFLAGS} NO_ROOT=1 WITHOUT_QEMU=1"
-	fi
+	RELEASE_RMAKEFLAGS="${RELEASE_RMAKEFLAGS} NO_ROOT=1 WITHOUT_QEMU=1"
 
 	return 0
 } # env_check()
@@ -429,6 +444,18 @@ chroot_arm_build_release() {
 	return 0
 } # chroot_arm_build_release()
 
+# chroot_cleanup(): Clean up resources setup in chroot_setup() at exit.
+#
+# This contains steps which must be executed at exit.
+#
+# Do not override this function: override `chroot_cleanup instead.
+_chroot_cleanup() {
+	if [ -c "${CHROOTDIR}/dev/null" ]; then
+		echo "Unmounting /dev in ${CHROOTDIR}"
+		umount -f "${CHROOTDIR}/dev"
+	fi
+}
+
 # main(): Start here.
 main() {
 	set -e # Everything must succeed
@@ -453,7 +480,7 @@ main() {
 		fi
 	fi
 	env_check
-	trap "umount ${CHROOTDIR}/dev" EXIT # Clean up devfs mount on exit
+	trap chroot_cleanup INT EXIT TERM
 	chroot_setup
 	extra_chroot_setup
 	chroot_build_target

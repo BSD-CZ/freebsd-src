@@ -35,10 +35,12 @@
  * CPU device support.
  */
 
-#define CPU_IVAR_PCPU		1
-#define CPU_IVAR_NOMINAL_MHZ	2
-#define CPU_IVAR_CPUID_SIZE	3
-#define CPU_IVAR_CPUID		4
+enum {
+	CPU_IVAR_PCPU = BUS_IVARS_PRIVATE,
+	CPU_IVAR_NOMINAL_MHZ,
+	CPU_IVAR_CPUID_SIZE,
+	CPU_IVAR_CPUID
+};
 
 static __inline struct pcpu *
 cpu_get_pcpu(device_t dev)
@@ -47,6 +49,17 @@ cpu_get_pcpu(device_t dev)
 
 	BUS_READ_IVAR(device_get_parent(dev), dev, CPU_IVAR_PCPU, &v);
 	return ((struct pcpu *)v);
+}
+
+/*
+ * Assumes the parent bus sets the CPU_IVAR_PCPU instance variable, which most
+ * CPU buses do.  A panic will ensue if not the case.  Calling devices should
+ * check for that condition (most probably in their attach function).
+ */
+static __inline u_int
+cpu_get_pcpuid(device_t dev)
+{
+	return (cpu_get_pcpu(dev)->pc_cpuid);
 }
 
 static __inline int32_t

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1984-2025  Mark Nudelman
+ * Copyright (C) 1984-2026  Mark Nudelman
  *
  * You may distribute under the terms of either the GNU General Public
  * License or the Less License, as specified in the README file.
@@ -202,20 +202,20 @@ static void ichardef_utf(constant char *s)
 			switch (*s++)
 			{
 			case 'b':
-				xbuf_add_data(&user_ubin_array, (unsigned char *) &range, sizeof(range));
+				xbuf_add_data(&user_ubin_array, &range, sizeof(range));
 				break;
 			case 'c':
-				xbuf_add_data(&user_compose_array, (unsigned char *) &range, sizeof(range));
+				xbuf_add_data(&user_compose_array, &range, sizeof(range));
 				break;
 			case 'd':
-				xbuf_add_data(&user_omit_array, (unsigned char *) &range, sizeof(range));
+				xbuf_add_data(&user_omit_array, &range, sizeof(range));
 				break;
 			case 'w':
-				xbuf_add_data(&user_wide_array, (unsigned char *) &range, sizeof(range));
-				xbuf_add_data(&user_prt_array, (unsigned char *) &range, sizeof(range));
+				xbuf_add_data(&user_wide_array, &range, sizeof(range));
+				xbuf_add_data(&user_prt_array, &range, sizeof(range));
 				break;
 			case 'p': case '.':
-				xbuf_add_data(&user_prt_array, (unsigned char *) &range, sizeof(range));
+				xbuf_add_data(&user_prt_array, &range, sizeof(range));
 				break;
 			case '\0':
 				s--;
@@ -429,13 +429,21 @@ static void set_charset(void)
 	/*
 	 * Try using the codeset name as the charset name.
 	 */
-	s = nl_langinfo(CODESET);
-	if (icharset(s, 1))
-		return;
+#if LESSTEST
+	/*
+	 * Don't check nl_langinfo in lesstest mode; charset should come
+	 * only from environment variables, not from the system locale.
+	 */
+	if (0) /* {{ unfortunately it's too early to use is_lesstest }} */
+#endif
+	{
+		s = nl_langinfo(CODESET);
+		if (icharset(s, 1))
+			return;
+	}
 #endif
 #endif
 
-#if HAVE_STRSTR
 	/*
 	 * Check whether LC_ALL, LC_CTYPE or LANG look like UTF-8 is used.
 	 */
@@ -448,7 +456,6 @@ static void set_charset(void)
 			if (icharset("utf-8", 1))
 				return;
 	}
-#endif
 
 #if HAVE_LOCALE
 	/*
@@ -578,20 +585,21 @@ public constant char * prutfchar(LWCHAR ch)
 /*
  * Get the length of a UTF-8 character in bytes.
  */
-public int utf_len(char ch)
+public int utf_len(char ach)
 {
-	if ((ch & 0x80) == 0)
+	unsigned char ch = (unsigned char) ach;
+	if (IS_ASCII_OCTET(ch))
 		return 1;
-	if ((ch & 0xE0) == 0xC0)
+	if (IS_UTF8_LEAD2(ch))
 		return 2;
-	if ((ch & 0xF0) == 0xE0)
+	if (IS_UTF8_LEAD3(ch))
 		return 3;
-	if ((ch & 0xF8) == 0xF0)
+	if (IS_UTF8_LEAD4(ch))
 		return 4;
 #if 0
-	if ((ch & 0xFC) == 0xF8)
+	if (IS_UTF8_LEAD5(ch))
 		return 5;
-	if ((ch & 0xFE) == 0xFC)
+	if (IS_UTF8_LEAD6(ch))
 		return 6;
 #endif
 	/* Invalid UTF-8 encoding. */
@@ -601,16 +609,17 @@ public int utf_len(char ch)
 /*
  * Does the parameter point to the lead byte of a well-formed UTF-8 character?
  */
-public lbool is_utf8_well_formed(constant char *ss, int slen)
+public lbool is_utf8_well_formed(constant char *ssa, int slen)
 {
 	int i;
 	int len;
-	unsigned char s0 = (unsigned char) ss[0];
+	constant unsigned char *ss = (constant unsigned char *) ssa;
+	unsigned char s0 = ss[0];
 
-	if (IS_UTF8_INVALID(s0))
+	if (IS_UTF8_LEAD5(s0) || IS_UTF8_LEAD6(s0) || IS_UTF8_INVALID(s0))
 		return (FALSE);
 
-	len = utf_len(ss[0]);
+	len = utf_len(s0);
 	if (len > slen)
 		return (FALSE);
 	if (len == 1)
@@ -897,6 +906,7 @@ public lbool is_composing_char(LWCHAR ch)
 public lbool is_ubin_char(LWCHAR ch)
 {
 	if (is_in_table(ch, &user_prt_table)) return FALSE;
+	if (ch > MAX_UNICODE) return TRUE;
 	return is_in_table(ch, &user_ubin_table) ||
 	       (is_in_table(ch, &ubin_table) ||
 	       (bs_mode == BS_CONTROL && is_in_table(ch, &fmt_table) &&

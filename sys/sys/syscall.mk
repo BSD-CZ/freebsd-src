@@ -441,4 +441,10 @@ MIASM =  \
 	setgroups.o \
 	jail_attach_jd.o \
 	jail_remove_jd.o \
-	kexec_load.o
+	kexec_load.o \
+	pdrfork.o \
+	pdwait.o \
+	renameat2.o \
+	pdopenpid.o \
+	pddupfd.o \
+	pdptrace.o

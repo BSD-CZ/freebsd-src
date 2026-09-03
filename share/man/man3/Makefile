@@ -510,6 +510,7 @@ PTHREAD_MLINKS+=pthread_condattr.3 pthread_condattr_destroy.3 \
 		pthread_condattr.3 pthread_condattr_setclock.3 \
 		pthread_condattr.3 pthread_condattr_getpshared.3 \
 		pthread_condattr.3 pthread_condattr_setpshared.3
+PTHREAD_MLINKS+=pthread_cond_timedwait.3 pthread_cond_clockwait.3
 PTHREAD_MLINKS+=pthread_getconcurrency.3 pthread_setconcurrency.3
 PTHREAD_MLINKS+=pthread_multi_np.3 pthread_single_np.3
 PTHREAD_MLINKS+=pthread_mutexattr.3 pthread_mutexattr_destroy.3 \
@@ -540,6 +541,7 @@ PTHREAD_MLINKS+=pthread_spin_init.3 pthread_spin_destroy.3 \
 PTHREAD_MLINKS+=pthread_testcancel.3 pthread_setcancelstate.3 \
 		pthread_testcancel.3 pthread_setcanceltype.3
 PTHREAD_MLINKS+=pthread_join.3 pthread_peekjoin_np.3 \
-		pthread_join.3 pthread_timedjoin_np.3
+		pthread_join.3 pthread_timedjoin_np.3 \
+		pthread_join.3 pthread_tryjoin_np.3
 
 .include <bsd.prog.mk>

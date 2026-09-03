@@ -19,6 +19,7 @@ ATF_TESTS_SH+=	altq \
 		icmp6 \
 		if_enc \
 		limits \
+		limiters \
 		loginterface \
 		killstate \
 		macro \
@@ -55,7 +56,8 @@ ATF_TESTS_SH+=	altq \
 		synproxy \
 		table \
 		tcp \
-		tos
+		tos \
+		unmapped_mbuf
 
 ATF_TESTS_PYTEST+=	frag4.py
 ATF_TESTS_PYTEST+=	frag6.py

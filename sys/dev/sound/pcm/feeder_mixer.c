@@ -43,9 +43,6 @@
 #include "snd_fxdiv_gen.h"
 #endif
 
-#undef SND_FEEDER_MULTIFORMAT
-#define SND_FEEDER_MULTIFORMAT	1
-
 struct feed_mixer_info {
 	uint32_t format;
 	uint32_t channels;
@@ -78,16 +75,16 @@ feed_mixer_init(struct pcm_feeder *f)
 {
 	struct feed_mixer_info *info;
 
-	if (f->desc->in != f->desc->out)
+	if (f->desc.in != f->desc.out)
 		return (EINVAL);
 
 	info = malloc(sizeof(*info), M_DEVBUF, M_NOWAIT | M_ZERO);
 	if (info == NULL)
 		return (ENOMEM);
 
-	info->format = AFMT_ENCODING(f->desc->in);
-	info->channels = AFMT_CHANNEL(f->desc->in);
-	info->bps = AFMT_BPS(f->desc->in);
+	info->format = AFMT_ENCODING(f->desc.in);
+	info->channels = AFMT_CHANNEL(f->desc.in);
+	info->bps = AFMT_BPS(f->desc.in);
 
 	f->data = info;
 
@@ -100,8 +97,7 @@ feed_mixer_free(struct pcm_feeder *f)
 	struct feed_mixer_info *info;
 
 	info = f->data;
-	if (info != NULL)
-		free(info, M_DEVBUF);
+	free(info, M_DEVBUF);
 
 	f->data = NULL;
 
@@ -175,14 +171,6 @@ feed_mixer_rec(struct pcm_channel *c)
 			CHN_UNLOCK(ch);
 			continue;
 		}
-#ifdef SND_DEBUG
-		if ((c->flags & CHN_F_DIRTY) && VCHAN_SYNC_REQUIRED(ch)) {
-			if (vchan_sync(ch) != 0) {
-				CHN_UNLOCK(ch);
-				continue;
-			}
-		}
-#endif
 		bs = ch->bufsoft;
 		if (ch->flags & CHN_F_MMAP)
 			sndbuf_dispose(bs, NULL, sndbuf_getready(bs));
@@ -271,14 +259,6 @@ feed_mixer_feed(struct pcm_feeder *f, struct pcm_channel *c, uint8_t *b,
 			CHN_UNLOCK(ch);
 			continue;
 		}
-#ifdef SND_DEBUG
-		if ((c->flags & CHN_F_DIRTY) && VCHAN_SYNC_REQUIRED(ch)) {
-			if (vchan_sync(ch) != 0) {
-				CHN_UNLOCK(ch);
-				continue;
-			}
-		}
-#endif
 		if ((ch->flags & CHN_F_MMAP) && !(ch->flags & CHN_F_CLOSING))
 			sndbuf_acquire(ch->bufsoft, NULL,
 			    sndbuf_getfree(ch->bufsoft));
@@ -321,7 +301,7 @@ feed_mixer_feed(struct pcm_feeder *f, struct pcm_channel *c, uint8_t *b,
 					if (mcnt != 0) {
 						memset(b + rcnt,
 						    sndbuf_zerodata(
-						    f->desc->out), mcnt);
+						    f->desc.out), mcnt);
 						mcnt = 0;
 					}
 					switch (info->format) {

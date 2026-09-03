@@ -366,7 +366,7 @@ in6_selectsrc(uint32_t fibnum, struct sockaddr_in6 *dstsock,
 		 */
 
 		/* Rule 5: Prefer outgoing interface */
-		if (!(ND_IFINFO(ifp)->flags & ND6_IFF_NO_PREFER_IFACE)) {
+		if (!(ifp->if_inet6->nd_flags & ND6_IFF_NO_PREFER_IFACE)) {
 			if (ia_best->ia_ifp == ifp && ia->ia_ifp != ifp)
 				NEXT(5);
 			if (ia_best->ia_ifp != ifp && ia->ia_ifp == ifp)
@@ -696,7 +696,7 @@ lookup_route(uint32_t fibnum, struct sockaddr_in6 *dst, struct route_in6 *ro,
 		 */
 		struct in6_pktinfo *pi;
 		if (opts && (pi = opts->ip6po_pktinfo) != NULL && pi->ipi6_ifindex) {
-			if (nh->nh_aifp->if_index != pi->ipi6_ifindex)
+			if (nh->nh_ifp->if_index != pi->ipi6_ifindex)
 				nh = NULL;
 		}
 	}
@@ -868,7 +868,7 @@ in6_selecthlim(struct inpcb *inp, struct ifnet *ifp)
 	if (inp && inp->in6p_hops >= 0)
 		return (inp->in6p_hops);
 	else if (ifp)
-		return (ND_IFINFO(ifp)->chlim);
+		return (ifp->if_inet6->nd_curhoplimit);
 	else if (inp && !IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_faddr)) {
 		struct nhop_object *nh;
 		struct in6_addr dst;
@@ -879,12 +879,28 @@ in6_selecthlim(struct inpcb *inp, struct ifnet *ifp)
 		in6_splitscope(&inp->in6p_faddr, &dst, &scopeid);
 		nh = fib6_lookup(fibnum, &dst, scopeid, 0, 0);
 		if (nh != NULL) {
-			hlim = ND_IFINFO(nh->nh_ifp)->chlim;
+			hlim = nh->nh_ifp->if_inet6->nd_curhoplimit;
 			return (hlim);
 		}
 	}
 	return (V_ip6_defhlim);
 }
+
+/*
+ * The followings are implementation of the policy table using a
+ * simple tail queue.
+ * XXX such details should be hidden.
+ * XXX implementation using binary tree should be more efficient.
+ */
+struct addrsel_policyent {
+	TAILQ_ENTRY(addrsel_policyent) ape_entry;
+	struct in6_addrpolicy ape_policy;
+};
+
+TAILQ_HEAD(addrsel_policyhead, addrsel_policyent);
+
+VNET_DEFINE_STATIC(struct addrsel_policyhead, addrsel_policytab);
+#define	V_addrsel_policytab		VNET(addrsel_policytab)
 
 void
 addrsel_policy_init(void)
@@ -901,6 +917,18 @@ addrsel_policy_init(void)
 
 	ADDRSEL_LOCK_INIT();
 	ADDRSEL_SXLOCK_INIT();
+}
+
+void
+addrsel_policy_destroy(void)
+{
+	struct addrsel_policyent *pol, *tpol;
+
+	TAILQ_FOREACH_SAFE(pol, &V_addrsel_policytab, ape_entry, tpol) {
+		TAILQ_REMOVE(&V_addrsel_policytab, pol, ape_entry);
+		free(pol, M_IFADDR);
+	}
+	/* TODO: Perform matching destruction of locks elsewhere. */
 }
 
 static struct in6_addrpolicy *
@@ -975,22 +1003,6 @@ in6_src_ioctl(u_long cmd, caddr_t data)
 
 	return (0);		/* XXX: compromise compilers */
 }
-
-/*
- * The followings are implementation of the policy table using a
- * simple tail queue.
- * XXX such details should be hidden.
- * XXX implementation using binary tree should be more efficient.
- */
-struct addrsel_policyent {
-	TAILQ_ENTRY(addrsel_policyent) ape_entry;
-	struct in6_addrpolicy ape_policy;
-};
-
-TAILQ_HEAD(addrsel_policyhead, addrsel_policyent);
-
-VNET_DEFINE_STATIC(struct addrsel_policyhead, addrsel_policytab);
-#define	V_addrsel_policytab		VNET(addrsel_policytab)
 
 static void
 init_policy_queue(void)

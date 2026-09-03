@@ -48,6 +48,7 @@
 #include "bnxt.h"
 #include "bnxt_hwrm.h"
 #include "bnxt_ulp.h"
+#include "bnxt_log.h"
 
 void bnxt_destroy_irq(struct bnxt_softc *softc);
 
@@ -125,7 +126,7 @@ static void bnxt_fill_msix_vecs(struct bnxt_softc *bp, struct bnxt_msix_entry *e
 		ent[i].vector = bp->irq_tbl[idx + i].vector;
 		ent[i].ring_idx = idx + i;
 		if (BNXT_CHIP_P5_PLUS(bp))
-			ent[i].db_offset = DB_PF_OFFSET_P5;
+			ent[i].db_offset = bp->db_offset;
 		else
 			ent[i].db_offset = (idx + i) * 0x80;
 
@@ -335,6 +336,40 @@ void bnxt_ulp_irq_stop(struct bnxt_softc *bp)
 	}
 }
 
+void
+bnxt_logger_ulp_live_data(void *d)
+{
+	struct bnxt_en_dev *edev;
+	struct bnxt_softc *bp;
+
+	bp = d;
+	edev = bp->edev;
+
+	if (!edev)
+		return;
+
+	if (bnxt_ulp_registered(edev, BNXT_ROCE_ULP)) {
+		struct bnxt_ulp_ops *ops;
+		struct bnxt_ulp *ulp;
+
+		ulp = edev->ulp_tbl;
+		//ops = rtnl_dereference(ulp->ulp_ops);
+		ops = ulp->ulp_ops;
+		if (!ops || !ops->ulp_log_live)
+			return;
+
+		ops->ulp_log_live(ulp->handle);
+	}
+}
+
+void
+bnxt_ulp_log_live(struct bnxt_en_dev *edev, u16 logger_id,
+		       const char *format, ...)
+{
+	bnxt_log_live(if_getsoftc(edev->net), logger_id, format);
+}
+EXPORT_SYMBOL(bnxt_ulp_log_live);
+
 void bnxt_ulp_async_events(struct bnxt_softc *bp, struct hwrm_async_event_cmpl *cmpl)
 {
 	u16 event_id = le16_to_cpu(cmpl->event_id);
@@ -449,6 +484,7 @@ static inline void bnxt_set_edev_info(struct bnxt_en_dev *edev, struct bnxt_soft
 	edev->pdev = bp->pdev;
 	edev->softc = bp;
 	edev->l2_db_size = bp->db_size;
+	edev->l2_db_offset = bp->db_offset;
 	mtx_init(&bp->en_ops_lock, "Ethernet ops lock", NULL, MTX_DEF);
 
 	if (bp->flags & BNXT_FLAG_ROCEV1_CAP)
@@ -457,9 +493,12 @@ static inline void bnxt_set_edev_info(struct bnxt_en_dev *edev, struct bnxt_soft
 		edev->flags |= BNXT_EN_FLAG_ROCEV2_CAP;
 	if (bp->is_asym_q)
 		edev->flags |= BNXT_EN_FLAG_ASYM_Q;
+	if (BNXT_SW_RES_LMT(bp))
+		edev->flags |= BNXT_EN_FLAG_SW_RES_LMT;
 	edev->hwrm_bar = bp->hwrm_bar;
 	edev->port_partition_type = bp->port_partition_type;
 	edev->ulp_version = BNXT_ULP_VERSION;
+	memcpy(edev->board_part_number, bp->board_partno, BNXT_VPD_PN_FLD_LEN - 1);
 }
 
 int bnxt_rdma_aux_device_del(struct bnxt_softc *softc)

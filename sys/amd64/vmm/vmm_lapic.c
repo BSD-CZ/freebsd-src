@@ -34,6 +34,7 @@
 #include <x86/apicreg.h>
 
 #include <dev/vmm/vmm_ktr.h>
+#include <dev/vmm/vmm_vm.h>
 
 #include <machine/vmm.h>
 #include "vmm_lapic.h"
@@ -235,4 +236,9 @@ lapic_mmio_read(struct vcpu *vcpu, uint64_t gpa, uint64_t *rval, int size,
 	vlapic = vm_lapic(vcpu);
 	error = vlapic_read(vlapic, 1, off, rval, arg);
 	return (error);
+}
+
+void
+vmm_justreturn(struct trapframe *frame)
+{
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1984-2025  Mark Nudelman
+ * Copyright (C) 1984-2026  Mark Nudelman
  *
  * You may distribute under the terms of either the GNU General Public
  * License or the Less License, as specified in the README file.
@@ -97,7 +97,7 @@ extern int twiddle;
 extern int status_col;
 extern int status_col_width;
 extern int linenum_width;
-extern int auto_wrap, ignaw;
+extern int auto_wrap, defer_wrap;
 extern int bo_s_width, bo_e_width;
 extern int ul_s_width, ul_e_width;
 extern int bl_s_width, bl_e_width;
@@ -129,12 +129,14 @@ static struct color_map color_map[] = {
 	{ AT_COLOR_BIN,            "kR" },
 	{ AT_COLOR_CTRL,           "kR" },
 	{ AT_COLOR_ERROR,          "kY" },
-	{ AT_COLOR_LINENUM,        "c" },
+	{ AT_COLOR_LINENUM,        "c*" },
 	{ AT_COLOR_MARK,           "Wb" },
 	{ AT_COLOR_PROMPT,         "kC" },
 	{ AT_COLOR_RSCROLL,        "kc" },
 	{ AT_COLOR_HEADER,         "" },
 	{ AT_COLOR_SEARCH,         "kG" },
+	{ AT_COLOR_TILDE,          "-d" },
+	{ AT_COLOR_TARGET,         "-u" },
 	{ AT_COLOR_SUBSEARCH(1),   "ky" },
 	{ AT_COLOR_SUBSEARCH(2),   "wb" },
 	{ AT_COLOR_SUBSEARCH(3),   "YM" },
@@ -185,7 +187,7 @@ public void init_line(void)
 			s = skipspc(s);
 			if (*s == ',')
 				++s;
-			xbuf_add_data(&xbuf, (constant void *) &num, sizeof(num));
+			xbuf_add_data(&xbuf, &num, sizeof(num));
 			++osc_ansi_allow_count;
 		}
 		osc_ansi_allow = (long *) xbuf.data;
@@ -436,7 +438,7 @@ public void plinestart(POSITION pos)
 		for (i = 0; i + len < (size_t) linenum_width; i++)
 			add_pfx(' ', AT_NORMAL);
 		for (i = 0; i < len; i++)
-			add_pfx(buf[i], AT_BOLD|AT_COLOR_LINENUM);
+			add_pfx(buf[i], use_color ? AT_COLOR_LINENUM : AT_BOLD);
 		add_pfx(' ', AT_NORMAL);
 	}
 	end_column = (int) linebuf.pfx_end; /*{{type-issue}}*/
@@ -446,7 +448,7 @@ public void plinestart(POSITION pos)
  * Return the width of the line prefix (status column and line number).
  * {{ Actual line number can be wider than linenum_width. }}
  */
-public int line_pfx_width(void)
+public unsigned line_pfx_width(void)
 {
 	int width = 0;
 	if (status_col)
@@ -1077,7 +1079,7 @@ static int flush_mbc_buf(POSITION pos)
  */
 public int pappend_b(char c, POSITION pos, lbool before_pendc)
 {
-	LWCHAR ch = c & 0377;
+	LWCHAR ch = (unsigned char) c;
 	int r;
 
 	if (pendc && !before_pendc)
@@ -1192,6 +1194,22 @@ static int store_control_char(LWCHAR ch, constant char *rep, POSITION pos)
 	return (0);
 }
 
+/*
+ * Remove invalid ANSI sequence.
+ */
+static void remove_ansi(void)
+{
+	constant char *start = (cshift < hshift) ? xbuf_char_data(&shifted_ansi): linebuf.buf;
+	size_t *end = (cshift < hshift) ? &shifted_ansi.end : &linebuf.end;
+	constant char *p = start + *end;
+	LWCHAR bch;
+	do {
+		bch = step_charc(&p, -1, start);
+	} while (p > start && (!IS_CSI_START(bch) || line_ansi->escs_in_seq-- > 0));
+	*end = ptr_diff(p, start);
+	xbuf_reset(&last_ansi);
+}
+
 static int store_ansi(LWCHAR ch, constant char *rep, POSITION pos)
 {
 	switch (ansi_step2(line_ansi, ch, pos != NULL_POSITION))
@@ -1215,18 +1233,7 @@ static int store_ansi(LWCHAR ch, constant char *rep, POSITION pos)
 		curr_last_ansi = (curr_last_ansi + 1) % NUM_LAST_ANSIS;
 		break;
 	case ANSI_ERR:
-		{
-			/* Remove whole unrecognized sequence.  */
-			constant char *start = (cshift < hshift) ? xbuf_char_data(&shifted_ansi): linebuf.buf;
-			size_t *end = (cshift < hshift) ? &shifted_ansi.end : &linebuf.end;
-			constant char *p = start + *end;
-			LWCHAR bch;
-			do {
-				bch = step_charc(&p, -1, start);
-			} while (p > start && (!IS_CSI_START(bch) || line_ansi->escs_in_seq-- > 0));
-			*end = ptr_diff(p, start);
-		}
-		xbuf_reset(&last_ansi);
+		remove_ansi();
 		ansi_done(line_ansi);
 		line_ansi = NULL;
 		break;
@@ -1388,13 +1395,12 @@ static void add_attr_normal(void)
 	{
 		switch (line_ansi->ostate)
 		{
-		case OSC_TYPENUM:
-		case OSC8_PARAMS:
-		case OSC8_URI:
-		case OSC_STRING:
-			addstr_linebuf("\033\\", AT_ANSI, 0);
+		case OSC_START:
+		case OSC_END:
 			break;
 		default:
+			/* We're in an unterminated OSC sequence; remove it. */
+			remove_ansi();
 			break;
 		}
 		ansi_done(line_ansi);
@@ -1410,7 +1416,7 @@ static void add_attr_normal(void)
 /*
  * Terminate the line in the line buffer.
  */
-public void pdone(lbool endline, lbool chopped, lbool forw)
+public void pdone(lbool endline, lbool chopped, lbool forw, lbool full_pad)
 {
 	(void) pflushmbc();
 	linebuf.prev_end = (!endline && !chopped) ? linebuf.end : 0;
@@ -1462,8 +1468,8 @@ public void pdone(lbool endline, lbool chopped, lbool forw)
 	/*
 	 * If we're coloring a status line, fill out the line with spaces.
 	 */
-	if (status_line && line_mark_attr != 0) {
-		while (end_column +1 < sc_width + cshift)
+	if (status_line && (line_mark_attr != 0 || full_pad)) {
+		while (end_column < sc_width + cshift)
 			add_linebuf(' ', line_mark_attr, 1);
 	}
 
@@ -1480,14 +1486,14 @@ public void pdone(lbool endline, lbool chopped, lbool forw)
 	 * the next line is blank.  In that case the single newline output for
 	 * that blank line would be ignored!)
 	 */
-	if (end_column < sc_width + cshift || !auto_wrap || (endline && ignaw) || ctldisp == OPT_ON)
+	if (end_column < sc_width + cshift || !auto_wrap || (endline && defer_wrap) || ctldisp == OPT_ON)
 	{
 		add_linebuf('\n', AT_NORMAL, 0);
 	} 
-	else if (ignaw && end_column >= sc_width + cshift && forw)
+	else if (defer_wrap && end_column >= sc_width + cshift && forw)
 	{
 		/*
-		 * Terminals with "ignaw" don't wrap until they *really* need
+		 * Terminals with "defer_wrap" don't wrap until they *really* need
 		 * to, i.e. when the character *after* the last one to fit on a
 		 * line is output. But they are too hard to deal with when they
 		 * get in the state where a full screen width of characters
@@ -1509,7 +1515,7 @@ public void pdone(lbool endline, lbool chopped, lbool forw)
 	 * colored with the last char's background color before the color
 	 * reset sequence is sent. Clear the line to reset the background color.
 	 */
-	if (auto_wrap && !ignaw && end_column >= sc_width + cshift)
+	if (auto_wrap && !defer_wrap && end_column >= sc_width + cshift)
 		clear_after_line = TRUE;
 	set_linebuf(linebuf.end, '\0', AT_NORMAL);
 }
@@ -1664,7 +1670,7 @@ public int gline(size_t i, int *ap)
 		{
 			if (i == 0)
 			{
-				*ap = AT_BOLD;
+				*ap = use_color ? AT_COLOR_TILDE : AT_BOLD;
 				return '~';
 			}
 			--i;
@@ -1681,7 +1687,7 @@ public int gline(size_t i, int *ap)
 	}
 	i += linebuf.print - linebuf.pfx_end;
 	*ap = linebuf.attr[i];
-	return (linebuf.buf[i] & 0xFF);
+	return (unsigned char) linebuf.buf[i];
 }
 
 /*
@@ -1878,10 +1884,10 @@ static int pappstr(constant char *str)
 
 /*
  * Load a string into the line buffer.
- * If the string is too long to fit on the screen,
+ * If the string is too long to fit on the screen (minus reserve chars),
  * truncate the beginning of the string to fit.
  */
-public void load_line(constant char *str)
+public void load_line(constant char *str, int attr, int reserve)
 {
 	int save_hshift = hshift;
 	hshift = 0;
@@ -1889,6 +1895,7 @@ public void load_line(constant char *str)
 	/* We're overwriting the line buffer, so what's in it will no longer be contiguous. */
 	set_line_contig_pos(NULL_POSITION);
 
+	sc_width -= reserve;
 	for (;;)
 	{
 		prewind(FALSE);
@@ -1903,15 +1910,41 @@ public void load_line(constant char *str)
 	}
 	set_linebuf(linebuf.end, '\0', AT_NORMAL);
 	linebuf.prev_end = 0;
+	sc_width += reserve;
 
 	/* Color the prompt unless it has ansi sequences in it. */
 	if (!ansi_in_line)
 	{
 		size_t i;
 		for (i = linebuf.print;  i < linebuf.end;  i++)
-			set_linebuf(i, linebuf.buf[i], AT_STANDOUT|AT_COLOR_PROMPT);
+			set_linebuf(i, linebuf.buf[i], attr);
 	}
 	hshift = save_hshift;
+}
+
+/*
+ * Find the length of the longest displayed line on the screen.
+ */
+public int longest_line_width(void)
+{
+	POSITION pos;
+	int save_width;
+	int sindex;
+	int longest = 0;
+
+	save_width = sc_width;
+	sc_width = INT_MAX; /* so forw_line() won't chop */
+	for (sindex = TOP; sindex < sc_height-1; sindex++)
+		if ((pos = position(sindex)) != NULL_POSITION)
+			break;
+	for (; sindex < sc_height-1 && pos != NULL_POSITION; sindex++)
+	{
+		pos = forw_line(pos, NULL, NULL);
+		if (end_column > longest)
+			longest = end_column;
+	}
+	sc_width = save_width;
+	return longest;
 }
 
 /*
@@ -1919,23 +1952,7 @@ public void load_line(constant char *str)
  */
 public int rrshift(void)
 {
-	POSITION pos;
-	int save_width;
-	int sline;
-	int longest = 0;
-
-	save_width = sc_width;
-	sc_width = INT_MAX; /* so forw_line() won't chop */
-	for (sline = TOP; sline < sc_height; sline++)
-		if ((pos = position(sline)) != NULL_POSITION)
-			break;
-	for (; sline < sc_height && pos != NULL_POSITION; sline++)
-	{
-		pos = forw_line(pos, NULL, NULL);
-		if (end_column > longest)
-			longest = end_column;
-	}
-	sc_width = save_width;
+	int longest = longest_line_width();
 	if (longest < sc_width)
 		return 0;
 	return longest - sc_width;

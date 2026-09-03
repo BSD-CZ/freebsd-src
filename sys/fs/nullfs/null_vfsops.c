@@ -152,6 +152,14 @@ nullfs_mount(struct mount *mp)
 	lowerrootvp = ndp->ni_vp;
 
 	/*
+	 * Do not allow to mount a vnode over itself.
+	 */
+	if (mp->mnt_vnodecovered == lowerrootvp) {
+		vput(lowerrootvp);
+		return (EDEADLK);
+	}
+
+	/*
 	 * Check multi null mount to avoid `lock against myself' panic.
 	 */
 	if (null_is_nullfs_vnode(mp->mnt_vnodecovered)) {
@@ -167,7 +175,7 @@ nullfs_mount(struct mount *mp)
 	 * Lower vnode must be the same type as the covered vnode - we
 	 * don't allow mounting directories to files or vice versa.
 	 */
-	if ((lowerrootvp->v_type != VDIR && lowerrootvp->v_type != VREG) ||
+	if ((lowerrootvp->v_type != VDIR && lowerrootvp->v_type != VREG && lowerrootvp->v_type != VSOCK) ||
 	    lowerrootvp->v_type != mp->mnt_vnodecovered->v_type) {
 		NULLFSDEBUG("nullfs_mount: target must be same type as fspath");
 		vput(lowerrootvp);
@@ -461,16 +469,12 @@ nullfs_unlink_lowervp(struct mount *mp, struct vnode *lowervp)
 	vhold(vp);
 	vunref(vp);
 
-	if (vp->v_usecount == 0) {
+	if (VN_IS_DOOMED(vp)) {
 		/*
-		 * If vunref() dropped the last use reference on the
-		 * nullfs vnode, it must be reclaimed, and its lock
-		 * was split from the lower vnode lock.  Need to do
-		 * extra unlock before allowing the final vdrop() to
-		 * free the vnode.
+		 * If the vnode is doomed, its lock was split from the lower
+		 * vnode lock.  Therefore we need to do an extra unlock before
+		 * allowing the final vdrop() to free the vnode.
 		 */
-		KASSERT(VN_IS_DOOMED(vp),
-		    ("not reclaimed nullfs vnode %p", vp));
 		VOP_UNLOCK(vp);
 	} else {
 		/*
@@ -480,8 +484,6 @@ nullfs_unlink_lowervp(struct mount *mp, struct vnode *lowervp)
 		 * relevant for future reclamations.
 		 */
 		ASSERT_VOP_ELOCKED(vp, "unlink_lowervp");
-		KASSERT(!VN_IS_DOOMED(vp),
-		    ("reclaimed nullfs vnode %p", vp));
 		xp->null_flags &= ~NULLV_NOUNLOCK;
 	}
 	vdrop(vp);

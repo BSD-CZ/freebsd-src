@@ -501,6 +501,13 @@ struct pf_osfp_ioctl {
 #define	PF_ANCHOR_HIWAT		512
 #define	PF_OPTIMIZER_TABLE_PFX	"__automatic_"
 
+enum {
+	PF_LIMITER_NOMATCH,
+	PF_LIMITER_BLOCK
+};
+
+#define	PF_LIMITER_DEFAULT	PF_LIMITER_BLOCK
+
 struct pf_rule {
 	struct pf_rule_addr	 src;
 	struct pf_rule_addr	 dst;
@@ -745,5 +752,12 @@ RB_PROTOTYPE(pf_anchor_global, pf_anchor, entry_global, pf_anchor_compare);
 RB_PROTOTYPE(pf_anchor_node, pf_anchor, entry_node, pf_anchor_compare);
 
 int	 pf_get_ruleset_number(u_int8_t);
-
+#ifdef _KERNEL
+#ifdef INET
+void pf_send_ip_direct(struct mbuf *m);
+#endif
+#ifdef INET6
+void pf_send_ip6_direct(struct mbuf *m);
+#endif
+#endif	/* _KERNEL */
 #endif	/* _NET_PF_H_ */

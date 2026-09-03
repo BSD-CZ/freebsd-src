@@ -52,6 +52,7 @@
 #include <sys/lock.h>
 #include <sys/malloc.h>
 #include <sys/memrange.h>
+#include <sys/msan.h>
 #include <sys/mutex.h>
 #include <sys/pcpu.h>
 #include <sys/proc.h>
@@ -124,7 +125,7 @@ volatile cpuset_t resuming_cpus;
 volatile cpuset_t toresume_cpus;
 
 /* used to hold the AP's until we are ready to release them */
-struct mtx ap_boot_mtx;
+static int ap_boot_lock;
 
 /* Set to 1 once we're ready to let the APs out of the pen. */
 volatile int aps_ready = 0;
@@ -1086,8 +1087,6 @@ init_secondary_tail(void)
 	PCPU_SET(curthread, PCPU_GET(idlethread));
 	schedinit_ap();
 
-	mtx_lock_spin(&ap_boot_mtx);
-
 	mca_init();
 
 	/* Init local apic for irq's */
@@ -1095,6 +1094,15 @@ init_secondary_tail(void)
 
 	/* Set memory range attributes for this CPU to match the BSP */
 	mem_range_AP_init();
+
+	/*
+	 * Use naive spinning lock instead of the real spinlock, since
+	 * printfs() below might take a very long time and trigger
+	 * spinlock timeout panics.  This is the only use of the
+	 * ap_boot_lock anyway.
+	 */
+	while (atomic_cmpset_acq_int(&ap_boot_lock, 0, 1) == 0)
+		ia32_pause();
 
 	smp_cpus++;
 
@@ -1117,6 +1125,8 @@ init_secondary_tail(void)
 		atomic_store_rel_int(&smp_started, 1);
 	}
 
+	atomic_store_rel_int(&ap_boot_lock, 0);
+
 #ifdef __amd64__
 	if (pmap_pcid_enabled)
 		load_cr4(rcr4() | CR4_PCIDE);
@@ -1124,8 +1134,6 @@ init_secondary_tail(void)
 	load_es(_udatasel);
 	load_fs(_ufssel);
 #endif
-
-	mtx_unlock_spin(&ap_boot_mtx);
 
 	/* Wait until all the AP's are up. */
 	while (atomic_load_acq_int(&smp_started) == 0)
@@ -1321,14 +1329,15 @@ ipi_send_cpu(int cpu, u_int ipi)
 }
 
 void
-ipi_bitmap_handler(struct trapframe frame)
+ipi_bitmap_handler(struct trapframe *frame)
 {
 	struct trapframe *oldframe;
 	struct thread *td;
 	int cpu = PCPU_GET(cpuid);
 	u_int ipi_bitmap;
 
-	kasan_mark(&frame, sizeof(frame), sizeof(frame), 0);
+	kasan_mark(frame, sizeof(*frame), sizeof(*frame), 0);
+	kmsan_mark(frame, sizeof(*frame), KMSAN_STATE_INITED);
 
 	td = curthread;
 	ipi_bitmap = atomic_readandclear_int(&cpuid_to_pcpu[cpu]->
@@ -1346,7 +1355,7 @@ ipi_bitmap_handler(struct trapframe frame)
 
 	td->td_intr_nesting_level++;
 	oldframe = td->td_intr_frame;
-	td->td_intr_frame = &frame;
+	td->td_intr_frame = frame;
 #if defined(STACK) || defined(DDB)
 	if (ipi_bitmap & (1 << IPI_TRACE))
 		stack_capture_intr();
@@ -1722,10 +1731,10 @@ cpuoff_handler(void)
  * Handle an IPI_SWI by waking delayed SWI thread.
  */
 void
-ipi_swi_handler(struct trapframe frame)
+ipi_swi_handler(struct trapframe *frame)
 {
 
-	intr_event_handle(clk_intr_event, &frame);
+	intr_event_handle(clk_intr_event, frame);
 }
 
 /*

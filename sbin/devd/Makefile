@@ -5,6 +5,7 @@ PACKAGE=devd
 CONFGROUPS=	CONFS DEVD
 CONFS=	devd.conf
 DEVD=	devmatch.conf
+DEVD+=	growfs_postboot.conf
 DEVDDIR=	/etc/devd
 .if ${MK_ACPI} != "no"
 DEVD+=	asus.conf
@@ -22,20 +23,18 @@ DHCLIENTDIR=		${DEVDDIR}
 DHCLIENT+=		dhclient.conf
 DHCLIENTPACKAGE=	dhclient
 
+.if ${MACHINE} == "i386" || ${MACHINE} == "amd64" || \
+    ${MACHINE} == "arm64"
 CONFGROUPS+=		POWERPROFILE
 POWERPROFILEDIR=	${DEVDDIR}
 POWERPROFILE+=		power_profile.conf
 POWERPROFILEPACKAGE=	acpi
+.endif
 
 CONFGROUPS+=		CONSOLE
 CONSOLEDIR=		${DEVDDIR}
 CONSOLE+=		moused.conf syscons.conf
 CONSOLEPACKAGE=		console-tools
-
-CONFGROUPS+=		SND
-SNDDIR=			${DEVDDIR}
-SND=			snd.conf
-SNDPACKAGE=		sound
 
 .if ${MK_BLUETOOTH} != "no"
 CONFGROUPS+=		BLUETOOTH
@@ -55,6 +54,13 @@ CONFGROUPS+=		NVME
 NVMEDIR=		${DEVDDIR}
 NVME+=			nvmf.conf
 NVMEPACKAGE=		nvme-tools
+
+.if ${MK_SOUND} != "no"
+CONFGROUPS+=		SND
+SNDDIR=			${DEVDDIR}
+SND=			snd.conf
+SNDPACKAGE=		sound
+.endif
 
 .if ${MK_USB} != "no"
 DEVD+=	uath.conf ulpt.conf

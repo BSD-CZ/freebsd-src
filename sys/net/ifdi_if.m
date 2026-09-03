@@ -71,6 +71,12 @@ CODE {
 	{
 	}
 
+	static bool
+	null_led_supported(if_ctx_t _ctx __unused)
+	{
+		return (true);
+	}
+
 	static void
 	null_vlan_register_op(if_ctx_t _ctx __unused, uint16_t vtag __unused)
 	{
@@ -116,6 +122,12 @@ CODE {
 	null_needs_restart(if_ctx_t _ctx __unused, enum iflib_restart_event _event __unused)
 	{
 		return (false);
+	}
+
+	static int
+	null_get_downreason(if_ctx_t _ctx __unused, struct ifdownreason *_ifdr __unused)
+	{
+		return (ENOTSUP);
 	}
 };
 
@@ -341,6 +353,10 @@ METHOD void led_func {
 	int _onoff;
 } DEFAULT null_led_func;
 
+METHOD bool led_supported {
+	if_ctx_t _ctx;
+} DEFAULT null_led_supported;
+
 METHOD void vlan_register {
 	if_ctx_t _ctx;
 	uint16_t _vtag;
@@ -364,3 +380,8 @@ METHOD bool needs_restart {
 	if_ctx_t _ctx;
 	enum iflib_restart_event _event;
 } DEFAULT null_needs_restart;
+
+METHOD int get_downreason {
+	if_ctx_t _ctx;
+	struct ifdownreason *_ifdr;
+} DEFAULT null_get_downreason;

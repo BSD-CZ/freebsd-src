@@ -8,6 +8,8 @@
 
 #include <sys/param.h>
 #include <sys/conf.h>
+#define	EXTERR_CATEGORY	EXTERR_CAT_VMM
+#include <sys/exterrvar.h>
 #include <sys/fcntl.h>
 #include <sys/ioccom.h>
 #include <sys/jail.h>
@@ -33,6 +35,7 @@
 #include <dev/vmm/vmm_dev.h>
 #include <dev/vmm/vmm_mem.h>
 #include <dev/vmm/vmm_stat.h>
+#include <dev/vmm/vmm_vm.h>
 
 #ifdef __amd64__
 #ifdef COMPAT_FREEBSD12
@@ -90,7 +93,7 @@ static bool vmm_initialized = false;
 
 static SLIST_HEAD(, vmmdev_softc) head;
 
-static unsigned pr_allow_flag;
+static unsigned int pr_allow_vmm_flag, pr_allow_vmm_ppt_flag;
 static struct sx vmmdev_mtx;
 SX_SYSINIT(vmmdev_mtx, &vmmdev_mtx, "vmm device mutex");
 
@@ -111,10 +114,10 @@ static int devmem_create_cdev(struct vmmdev_softc *sc, int id, char *devmem);
 static void vmmdev_destroy(struct vmmdev_softc *sc);
 
 static int
-vmm_priv_check(struct ucred *ucred)
+vmm_jail_priv_check(struct ucred *ucred)
 {
 	if (jailed(ucred) &&
-	    !(ucred->cr_prison->pr_allow & pr_allow_flag))
+	    (ucred->cr_prison->pr_allow & pr_allow_vmm_flag) == 0)
 		return (EPERM);
 
 	return (0);
@@ -139,38 +142,6 @@ vcpu_unlock_one(struct vcpu *vcpu)
 
 	vcpu_set_state(vcpu, VCPU_IDLE, false);
 }
-
-#ifndef __amd64__
-static int
-vcpu_set_state_all(struct vm *vm, enum vcpu_state newstate)
-{
-	struct vcpu *vcpu;
-	int error;
-	uint16_t i, j, maxcpus;
-
-	error = 0;
-	maxcpus = vm_get_maxcpus(vm);
-	for (i = 0; i < maxcpus; i++) {
-		vcpu = vm_vcpu(vm, i);
-		if (vcpu == NULL)
-			continue;
-		error = vcpu_lock_one(vcpu);
-		if (error)
-			break;
-	}
-
-	if (error) {
-		for (j = 0; j < i; j++) {
-			vcpu = vm_vcpu(vm, j);
-			if (vcpu == NULL)
-				continue;
-			vcpu_unlock_one(vcpu);
-		}
-	}
-
-	return (error);
-}
-#endif
 
 static int
 vcpu_lock_all(struct vmmdev_softc *sc)
@@ -400,7 +371,7 @@ vmmdev_open(struct cdev *dev, int flags, int fmt, struct thread *td)
 	 * A jail without vmm access shouldn't be able to access vmm device
 	 * files at all, but check here just to be thorough.
 	 */
-	error = vmm_priv_check(td->td_ucred);
+	error = vmm_jail_priv_check(td->td_ucred);
 	if (error != 0)
 		return (error);
 
@@ -490,8 +461,11 @@ vmmdev_ioctl(struct cdev *cdev, u_long cmd, caddr_t data, int fflag,
 	if (ioctl == NULL)
 		return (ENOTTY);
 
-	if ((ioctl->flags & VMMDEV_IOCTL_PRIV_CHECK_DRIVER) != 0) {
-		error = priv_check(td, PRIV_DRIVER);
+	if ((ioctl->flags & VMMDEV_IOCTL_PPT) != 0) {
+		if (jailed(td->td_ucred) && (td->td_ucred->cr_prison->pr_allow &
+		    pr_allow_vmm_ppt_flag) == 0)
+			return (EPERM);
+		error = priv_check(td, PRIV_VMM_PPTDEV);
 		if (error != 0)
 			return (error);
 	}
@@ -907,8 +881,7 @@ vmmdev_destroy(struct vmmdev_softc *sc)
 		free(dsc, M_VMMDEV);
 	}
 
-	if (sc->vm != NULL)
-		vm_destroy(sc->vm);
+	vm_destroy(sc->vm);
 
 	chgvmmcnt(sc->ucred->cr_ruidinfo, -1, 0);
 	crfree(sc->ucred);
@@ -927,12 +900,23 @@ vmmdev_lookup_and_destroy(const char *name, struct ucred *cred)
 {
 	struct cdev *cdev;
 	struct vmmdev_softc *sc;
+	int error;
 
 	sx_xlock(&vmmdev_mtx);
 	sc = vmmdev_lookup(name, cred);
 	if (sc == NULL || sc->cdev == NULL) {
 		sx_xunlock(&vmmdev_mtx);
 		return (EINVAL);
+	}
+
+	/*
+	 * Only the creator of a VM or a privileged user can destroy it.
+	 */
+	if ((cred->cr_uid != sc->ucred->cr_uid ||
+	     cred->cr_prison != sc->ucred->cr_prison) &&
+	    (error = priv_check_cred(cred, PRIV_VMM_DESTROY)) != 0) {
+		sx_xunlock(&vmmdev_mtx);
+		return (error);
 	}
 
 	/*
@@ -956,7 +940,7 @@ sysctl_vmm_destroy(SYSCTL_HANDLER_ARGS)
 	char *buf;
 	int error, buflen;
 
-	error = vmm_priv_check(req->td->td_ucred);
+	error = vmm_jail_priv_check(req->td->td_ucred);
 	if (error)
 		return (error);
 
@@ -1021,9 +1005,32 @@ vmmdev_create(const char *name, uint32_t flags, struct ucred *cred)
 		return (EEXIST);
 	}
 
+	/*
+	 * Unprivileged users can only create VMs that will be automatically
+	 * destroyed when the creating descriptor is closed.
+	 */
+	if ((flags & VMMCTL_CREATE_DESTROY_ON_CLOSE) == 0 &&
+	    (error = priv_check_cred(cred, PRIV_VMM_CREATE)) != 0) {
+		sx_xunlock(&vmmdev_mtx);
+		return (EXTERROR(error,
+		    "An unprivileged user must run VMs in monitor mode"));
+	}
+
+	if ((error = vmm_jail_priv_check(cred)) != 0) {
+		sx_xunlock(&vmmdev_mtx);
+		return (EXTERROR(error,
+		    "VMs cannot be created in the current jail"));
+	}
+
+	if (!chgvmmcnt(cred->cr_ruidinfo, 1, vm_maxvmms)) {
+		sx_xunlock(&vmmdev_mtx);
+		return (ENOMEM);
+	}
+
 	error = vm_create(name, &vm);
 	if (error != 0) {
 		sx_xunlock(&vmmdev_mtx);
+		(void)chgvmmcnt(cred->cr_ruidinfo, -1, 0);
 		return (error);
 	}
 	sc = vmmdev_alloc(vm, cred);
@@ -1035,8 +1042,8 @@ vmmdev_create(const char *name, uint32_t flags, struct ucred *cred)
 	make_dev_args_init(&mda);
 	mda.mda_devsw = &vmmdevsw;
 	mda.mda_cr = sc->ucred;
-	mda.mda_uid = UID_ROOT;
-	mda.mda_gid = GID_WHEEL;
+	mda.mda_uid = cred->cr_uid;
+	mda.mda_gid = GID_VMM;
 	mda.mda_mode = 0600;
 	mda.mda_si_drv1 = sc;
 	mda.mda_flags = MAKEDEV_CHECKNAME | MAKEDEV_WAITOK;
@@ -1045,12 +1052,6 @@ vmmdev_create(const char *name, uint32_t flags, struct ucred *cred)
 		sx_xunlock(&vmmdev_mtx);
 		vmmdev_destroy(sc);
 		return (error);
-	}
-	if (!chgvmmcnt(cred->cr_ruidinfo, 1, vm_maxvmms)) {
-		sx_xunlock(&vmmdev_mtx);
-		destroy_dev(cdev);
-		vmmdev_destroy(sc);
-		return (ENOMEM);
 	}
 	sc->cdev = cdev;
 	sx_xunlock(&vmmdev_mtx);
@@ -1066,7 +1067,7 @@ sysctl_vmm_create(SYSCTL_HANDLER_ARGS)
 	if (!vmm_initialized)
 		return (ENXIO);
 
-	error = vmm_priv_check(req->td->td_ucred);
+	error = vmm_jail_priv_check(req->td->td_ucred);
 	if (error != 0)
 		return (error);
 
@@ -1131,7 +1132,7 @@ vmmctl_open(struct cdev *cdev, int flags, int fmt, struct thread *td)
 	int error;
 	struct vmmctl_priv *priv;
 
-	error = vmm_priv_check(td->td_ucred);
+	error = vmm_jail_priv_check(td->td_ucred);
 	if (error != 0)
 		return (error);
 
@@ -1209,10 +1210,13 @@ vmmdev_init(void)
 
 	sx_xlock(&vmmdev_mtx);
 	error = make_dev_p(MAKEDEV_CHECKNAME, &vmmctl_cdev, &vmmctlsw, NULL,
-	    UID_ROOT, GID_WHEEL, 0600, "vmmctl");
-	if (error == 0)
-		pr_allow_flag = prison_add_allow(NULL, "vmm", NULL,
-		    "Allow use of vmm in a jail.");
+	    UID_ROOT, GID_VMM, 0660, "vmmctl");
+	if (error == 0) {
+		pr_allow_vmm_flag = prison_add_allow(NULL, "vmm", NULL,
+		    "Allow use of vmm in a jail");
+		pr_allow_vmm_ppt_flag = prison_add_allow(NULL, "vmm_ppt", NULL,
+		    "Allow use of vmm with ppt devices in a jail");
+	}
 	sx_xunlock(&vmmdev_mtx);
 
 	return (error);
@@ -1259,9 +1263,11 @@ vmm_handler(module_t mod, int what, void *arg)
 		if (error == 0)
 			vmm_initialized = true;
 		else {
-			error = vmmdev_cleanup();
-			KASSERT(error == 0,
-			    ("%s: vmmdev_cleanup failed: %d", __func__, error));
+			int error1 __diagused;
+
+			error1 = vmmdev_cleanup();
+			KASSERT(error1 == 0,
+			    ("%s: vmmdev_cleanup failed: %d", __func__, error1));
 		}
 		break;
 	case MOD_UNLOAD:
@@ -1295,9 +1301,15 @@ static moduledata_t vmm_kmod = {
  *
  * - Initialization requires smp_rendezvous() and therefore must happen
  *   after SMP is fully functional (after SI_SUB_SMP).
- * - vmm device initialization requires an initialized devfs.
+ * - vmm device initialization requires an initialized devfs
+ *   (SI_SUB_DRIVERS is after SI_SUB_DEVFS).
+ * - On amd64, vmm.ko also contains device drivers such as ppt and AMD-Vi/IVHD.
+ *   Load this module handler after SI_SUB_DRIVERS so reverse-order unload runs
+ *   iommu_cleanup() before those drivers detach.  AMD-Vi disable still needs
+ *   the IVHD softcs, and ivhd_detach() refuses while the IOMMU is initialized.
  */
-DECLARE_MODULE(vmm, vmm_kmod, MAX(SI_SUB_SMP, SI_SUB_DEVFS) + 1, SI_ORDER_ANY);
+DECLARE_MODULE(vmm, vmm_kmod, MAX(SI_SUB_DRIVERS, SI_SUB_SMP) + 1,
+    SI_ORDER_ANY);
 MODULE_VERSION(vmm, 1);
 
 static int
@@ -1360,8 +1372,8 @@ devmem_create_cdev(struct vmmdev_softc *sc, int segid, char *devname)
 	make_dev_args_init(&mda);
 	mda.mda_devsw = &devmemsw;
 	mda.mda_cr = sc->ucred;
-	mda.mda_uid = UID_ROOT;
-	mda.mda_gid = GID_WHEEL;
+	mda.mda_uid = sc->ucred->cr_uid;
+	mda.mda_gid = GID_VMM;
 	mda.mda_mode = 0600;
 	mda.mda_si_drv1 = dsc;
 	mda.mda_flags = MAKEDEV_CHECKNAME | MAKEDEV_WAITOK;

@@ -56,6 +56,11 @@ struct acpi_softc {
     int			acpi_enabled;
     enum power_stype	acpi_stype;
     int			acpi_sleep_disabled;
+    sbintime_t		acpi_resume_sbt;	/* Uptime at last resume. */
+
+    /* Supported sleep states and types. */
+    bool		acpi_supported_stypes[POWER_STYPE_COUNT];
+    bool		acpi_supported_sstates[ACPI_S_STATE_COUNT];
 
     struct sysctl_ctx_list acpi_sysctl_ctx;
     struct sysctl_oid	*acpi_sysctl_tree;
@@ -64,7 +69,7 @@ struct acpi_softc {
     enum power_stype	acpi_lid_switch_stype;
 
     int			acpi_standby_sx;
-    int			acpi_s4bios;
+    bool		acpi_s4bios_supported;
 
     int			acpi_sleep_delay;
     int			acpi_do_disable;
@@ -191,6 +196,7 @@ extern struct mtx			acpi_mutex;
 #define	ACPI_THERMAL		0x01000000
 #define	ACPI_TIMER		0x02000000
 #define	ACPI_OEM		0x04000000
+#define	ACPI_SPMC		0x08000000
 
 /*
  * Constants for different interrupt models used with acpi_SetIntrModel().
@@ -275,42 +281,22 @@ extern int	acpi_override_isa_irq_polarity;
  * interface compatibility with ISA drivers which can also
  * attach to ACPI.
  */
-#define ACPI_IVAR_HANDLE	0x100
-#define ACPI_IVAR_UNUSED	0x101	/* Unused/reserved. */
-#define ACPI_IVAR_PRIVATE	0x102
-#define ACPI_IVAR_FLAGS		0x103
-#define	ACPI_IVAR_DOMAIN	0x104
+enum {
+	ACPI_IVAR_PRIVATE = 20,
+	ACPI_IVAR_DOMAIN,
+	ACPI_IVAR_HANDLE = BUS_IVARS_ACPI,
+	ACPI_IVAR_FLAGS
+};
 
 /*
  * ad_domain NUMA domain special value.
  */
 #define	ACPI_DEV_DOMAIN_UNKNOWN	(-1)
 
-/*
- * Accessor functions for our ivars.  Default value for BUS_READ_IVAR is
- * (type) 0.  The <sys/bus.h> accessor functions don't check return values.
- */
-#define __ACPI_BUS_ACCESSOR(varp, var, ivarp, ivar, type)	\
-								\
-static __inline type varp ## _get_ ## var(device_t dev)		\
-{								\
-    uintptr_t v = 0;						\
-    BUS_READ_IVAR(device_get_parent(dev), dev,			\
-	ivarp ## _IVAR_ ## ivar, &v);				\
-    return ((type) v);						\
-}								\
-								\
-static __inline void varp ## _set_ ## var(device_t dev, type t)	\
-{								\
-    uintptr_t v = (uintptr_t) t;				\
-    BUS_WRITE_IVAR(device_get_parent(dev), dev,			\
-	ivarp ## _IVAR_ ## ivar, v);				\
-}
-
-__ACPI_BUS_ACCESSOR(acpi, handle, ACPI, HANDLE, ACPI_HANDLE)
-__ACPI_BUS_ACCESSOR(acpi, private, ACPI, PRIVATE, void *)
-__ACPI_BUS_ACCESSOR(acpi, flags, ACPI, FLAGS, int)
-__ACPI_BUS_ACCESSOR(acpi, domain, ACPI, DOMAIN, int)
+__BUS_ACCESSOR_DEFAULT(acpi, handle, ACPI, HANDLE, ACPI_HANDLE, NULL)
+__BUS_ACCESSOR(acpi, private, ACPI, PRIVATE, void *)
+__BUS_ACCESSOR(acpi, flags, ACPI, FLAGS, int)
+__BUS_ACCESSOR(acpi, domain, ACPI, DOMAIN, int)
 
 void acpi_fake_objhandler(ACPI_HANDLE h, void *data);
 static __inline device_t
@@ -380,9 +366,9 @@ typedef void acpi_subtable_handler(ACPI_SUBTABLE_HEADER *, void *);
 
 BOOLEAN		acpi_DeviceIsPresent(device_t dev);
 BOOLEAN		acpi_BatteryIsPresent(device_t dev);
-ACPI_STATUS	acpi_GetHandleInScope(ACPI_HANDLE parent, char *path,
+ACPI_STATUS	acpi_GetHandleInScope(ACPI_HANDLE parent, const char *path,
 		    ACPI_HANDLE *result);
-ACPI_STATUS	acpi_GetProperty(device_t dev, ACPI_STRING propname,
+ACPI_STATUS	acpi_GetProperty(device_t dev, const char *propname,
 		    const ACPI_OBJECT **value);
 ACPI_BUFFER	*acpi_AllocBuffer(int size);
 ACPI_STATUS	acpi_ConvertBufferToInteger(ACPI_BUFFER *bufp,
@@ -431,7 +417,7 @@ int		acpi_MatchHid(ACPI_HANDLE h, const char *hid);
 #define ACPI_MATCHHID_CID 2
 
 static __inline bool
-acpi_HasProperty(device_t dev, ACPI_STRING propname)
+acpi_HasProperty(device_t dev, const char *propname)
 {
 
 	return ACPI_SUCCESS(acpi_GetProperty(dev, propname, NULL));
@@ -472,21 +458,26 @@ ACPI_STATUS	acpi_parse_resources(device_t dev, ACPI_HANDLE handle,
 		    struct acpi_parse_resource_set *set, void *arg);
 
 /* ACPI event handling */
-UINT32		acpi_event_power_button_sleep(void *context);
-UINT32		acpi_event_power_button_wake(void *context);
-UINT32		acpi_event_sleep_button_sleep(void *context);
-UINT32		acpi_event_sleep_button_wake(void *context);
+UINT32		acpi_event_power_button_sleep(struct acpi_softc *sc);
+UINT32		acpi_event_power_button_wake(struct acpi_softc *sc);
+UINT32		acpi_event_sleep_button_sleep(struct acpi_softc *sc);
+UINT32		acpi_event_sleep_button_wake(struct acpi_softc *sc);
 
 #define ACPI_EVENT_PRI_FIRST      0
 #define ACPI_EVENT_PRI_DEFAULT    10000
 #define ACPI_EVENT_PRI_LAST       20000
 
-typedef void (*acpi_event_handler_t)(void *, int);
+typedef void (*acpi_event_handler_t)(void *, enum power_stype);
 
 EVENTHANDLER_DECLARE(acpi_sleep_event, acpi_event_handler_t);
 EVENTHANDLER_DECLARE(acpi_wakeup_event, acpi_event_handler_t);
 EVENTHANDLER_DECLARE(acpi_acad_event, acpi_event_handler_t);
 EVENTHANDLER_DECLARE(acpi_video_event, acpi_event_handler_t);
+EVENTHANDLER_DECLARE(acpi_post_dev_suspend, acpi_event_handler_t);
+EVENTHANDLER_DECLARE(acpi_pre_dev_resume, acpi_event_handler_t);
+
+void		acpi_invoke_sleep_eventhandler(const enum power_stype *stype);
+void		acpi_invoke_wake_eventhandler(const enum power_stype *stype);
 
 /* Device power control. */
 ACPI_STATUS	acpi_pwr_wake_enable(ACPI_HANDLE consumer, int enable);
@@ -523,6 +514,8 @@ acpi_d_state_to_str(int state)
     const char *strs[ACPI_D_STATE_COUNT] = {"D0", "D1", "D2", "D3hot",
 	"D3cold"};
 
+    if (state == ACPI_STATE_UNKNOWN)
+	return ("unknown D-state");
     MPASS(state >= ACPI_STATE_D0 && state <= ACPI_D_STATES_MAX);
     return (strs[state]);
 }
@@ -610,6 +603,9 @@ void		acpi_pxm_set_mem_locality(void);
 void		acpi_pxm_set_cpu_locality(void);
 int		acpi_pxm_get_cpu_locality(int apic_id);
 int		acpi_pxm_parse(device_t dev);
+int		acpi_get_cpus_for_domain(device_t dev, device_t child,
+		    int domain, enum cpu_sets op, size_t setsize,
+		    cpuset_t *cpuset);
 
 /*
  * Map a PXM to a VM domain.
@@ -618,6 +614,19 @@ int		acpi_pxm_parse(device_t dev);
  */
 int		acpi_map_pxm_to_vm_domainid(int pxm);
 bus_get_cpus_t		acpi_get_cpus;
+
+/*
+ * Hook for ACPI sleep routine.
+ */
+extern int (*acpi_prepare_sleep)(uint8_t state, uint32_t a, uint32_t b,
+    bool ext);
+
+static inline void
+acpi_set_prepare_sleep(
+    int (*hook)(uint8_t state, uint32_t a, uint32_t b, bool ext))
+{
+	acpi_prepare_sleep = hook;
+}
 
 #ifdef __aarch64__
 /*

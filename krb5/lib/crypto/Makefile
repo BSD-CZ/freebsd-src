@@ -13,7 +13,7 @@
 
 LIB=		k5crypto
 # SHLIB_MAJOR=	3
-LDFLAGS=-Wl,--no-undefined
+LDFLAGS+=-Wl,--no-undefined
 LIBADD=	com_err krb5support crypto
 VERSION_MAP=	${.CURDIR}/version.map
 
@@ -41,6 +41,7 @@ CFLAGS+=-I${.CURDIR:H:H}/include \
 	-I${KRB5_DIR}/lib/crypto/builtin/md5 \
 	-I${KRB5_DIR}/lib/crypto/builtin/sha1 \
 	-I${KRB5_DIR}/lib/crypto/builtin/sha2 \
-	-I${SRCTOP}/crypto/openssl/include
+	-I${SRCTOP}/crypto/openssl/include \
+	-I${KRB5_OBJTOP}/util/profile
 
 .include <bsd.lib.mk>

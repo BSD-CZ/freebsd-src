@@ -605,4 +605,10 @@ const char *freebsd32_syscallnames[] = {
 	"jail_attach_jd",			/* 597 = jail_attach_jd */
 	"jail_remove_jd",			/* 598 = jail_remove_jd */
 	"#599",			/* 599 = kexec_load */
+	"pdrfork",			/* 600 = pdrfork */
+	"freebsd32_pdwait",			/* 601 = freebsd32_pdwait */
+	"renameat2",			/* 602 = renameat2 */
+	"pdopenpid",			/* 603 = pdopenpid */
+	"pddupfd",			/* 604 = pddupfd */
+	"freebsd32_pdptrace",			/* 605 = freebsd32_pdptrace */
 };

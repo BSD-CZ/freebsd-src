@@ -97,6 +97,7 @@ extern	int	x86_rngds_mitg_enable;
 extern	int	zenbleed_enable;
 extern	int	cpu_amdc1e_bug;
 extern	char	bootmethod[16];
+extern	int	fred;
 
 struct	pcb;
 struct	thread;
@@ -113,6 +114,8 @@ struct	minidumpstate;
  * approximation.
  */
 typedef void alias_for_inthand_t(void);
+
+extern void (*fred_ipi_handlers[])(struct trapframe *);
 
 bool	acpi_get_fadt_bootflags(uint16_t *flagsp);
 void	*alloc_fpusave(int flags);
@@ -162,7 +165,7 @@ void	x86_set_fork_retval(struct thread *td);
 uint64_t rdtsc_ordered(void);
 
 /*
- * MSR ops for x86_msr_op()
+ * MSR ops for x86_msr_op().
  */
 #define	MSR_OP_ANDNOT		0x00000001
 #define	MSR_OP_OR		0x00000002
@@ -170,8 +173,9 @@ uint64_t rdtsc_ordered(void);
 #define	MSR_OP_READ		0x00000004
 
 /*
- * Where and which execution mode
+ * Where and which execution mode.
  */
+#define	MSR_OP_SAFE		0x08000000
 #define	MSR_OP_LOCAL		0x10000000
 #define	MSR_OP_SCHED_ALL	0x20000000
 #define	MSR_OP_SCHED_ONE	0x30000000
@@ -179,7 +183,7 @@ uint64_t rdtsc_ordered(void);
 #define	MSR_OP_RENDEZVOUS_ONE	0x50000000
 #define	MSR_OP_CPUID(id)	((id) << 8)
 
-void x86_msr_op(u_int msr, u_int op, uint64_t arg1, uint64_t *res);
+int x86_msr_op(u_int msr, u_int op, uint64_t arg1, uint64_t *res);
 
 #if defined(__i386__) && defined(INVARIANTS)
 void	trap_check_kstack(void);

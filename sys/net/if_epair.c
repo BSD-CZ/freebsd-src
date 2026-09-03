@@ -150,10 +150,6 @@ epair_clear_mbuf(struct mbuf *m)
 		m->m_pkthdr.csum_flags &= ~CSUM_SND_TAG;
 	}
 
-	/* Clear vlan information. */
-	m->m_flags &= ~M_VLANTAG;
-	m->m_pkthdr.ether_vtag = 0;
-
 	m_tag_delete_nonpersistent(m);
 }
 
@@ -246,6 +242,9 @@ epair_prepare_mbuf(struct mbuf *m, struct ifnet *src_ifp)
 	epair_clear_mbuf(m);
 	if_setrcvif(m, src_ifp);
 	M_SETFIB(m, src_ifp->if_fib);
+	if ((if_getcapenable(src_ifp) & IFCAP_RXCSUM) == 0)
+		m->m_pkthdr.csum_flags &= ~(CSUM_L3_CALC | CSUM_L3_VALID |
+		    CSUM_L4_CALC | CSUM_L4_VALID);
 
 	MPASS(m->m_nextpkt == NULL);
 	MPASS((m->m_pkthdr.csum_flags & CSUM_SND_TAG) == 0);
@@ -355,6 +354,10 @@ epair_transmit(struct ifnet *ifp, struct mbuf *m)
 		return (E2BIG);
 	}
 
+	if ((ifp->if_capenable & IFCAP_MEXTPG) == 0) {
+		M_ASSERTMAPPED(m);
+	}
+
 	/*
 	 * We are not going to use the interface en/dequeue mechanism
 	 * on the TX side. We are called from ether_output_frame()
@@ -455,7 +458,7 @@ epair_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 {
 	struct epair_softc *sc;
 	struct ifreq *ifr;
-	int error;
+	int error, cap;
 
 	ifr = (struct ifreq *)data;
 	switch (cmd) {
@@ -484,15 +487,21 @@ epair_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 		break;
 	case SIOCSIFCAP:
 		/*
-		 * Enable/disable capabilities as requested, besides
-		 * IFCAP_RXCSUM(_IPV6), which always remain enabled.
-		 * Incoming packets may have the mbuf flag CSUM_DATA_VALID set.
-		 * Without IFCAP_RXCSUM(_IPV6), this flag would have to be
-		 * removed, which does not seem helpful.
+		 * Enable/disable capabilities as requested, but treat
+		 * IFCAP_RXCSUM and IFCAP_RXCSUM_IPV6 special as they can only
+		 * be set or unset as pair.
 		 */
-		ifp->if_capenable = ifr->ifr_reqcap | IFCAP_RXCSUM |
-		    IFCAP_RXCSUM_IPV6;
+		cap = ifr->ifr_reqcap;
+		if (((cap & IFCAP_RXCSUM) == 0) !=
+		    ((cap & IFCAP_RXCSUM_IPV6) == 0)) {
+			if ((ifp->if_capenable & IFCAP_RXCSUM) == 0)
+				cap |= (IFCAP_RXCSUM | IFCAP_RXCSUM_IPV6);
+			else
+				cap &= ~(IFCAP_RXCSUM | IFCAP_RXCSUM_IPV6);
+		}
+		ifp->if_capenable = cap;
 		epair_caps_changed(ifp);
+		VLAN_CAPABILITIES(ifp);
 		/*
 		 * If IFCAP_TXCSUM(_IPV6) has been changed, change it on the
 		 * other epair interface as well.
@@ -501,17 +510,23 @@ epair_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 		 * In that case this capability needs to be disabled on the
 		 * other epair interface to avoid sending packets in the bridge
 		 * that rely on this capability.
+		 * Do the same for IFCAP_VLAN_HWTAGGING. If the sending epair
+		 * end has this capability enabled, the other end has to have
+		 * it enabled too. Otherwise, epair would have to add the VLAN
+		 * tag in the Ethernet header.
 		 */
 		sc = ifp->if_softc;
 		if ((ifp->if_capenable ^ sc->oifp->if_capenable) &
-		    (IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6)) {
+		    (IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6 | IFCAP_VLAN_HWTAGGING)) {
 			sc->oifp->if_capenable &=
-			    ~(IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6);
+			    ~(IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6 |
+			      IFCAP_VLAN_HWTAGGING);
 			sc->oifp->if_capenable |= ifp->if_capenable &
-			    (IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6);
+			    (IFCAP_TXCSUM | IFCAP_TXCSUM_IPV6 |
+			     IFCAP_VLAN_HWTAGGING);
 			epair_caps_changed(sc->oifp);
+			VLAN_CAPABILITIES(sc->oifp);
 		}
-		VLAN_CAPABILITIES(ifp);
 		error = 0;
 		break;
 
@@ -626,10 +641,12 @@ epair_setup_ifp(struct epair_softc *sc, char *name, int unit)
 	ifp->if_dname = epairname;
 	ifp->if_dunit = unit;
 	ifp->if_flags = IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST;
-	ifp->if_capabilities = IFCAP_VLAN_MTU | IFCAP_TXCSUM |
-	    IFCAP_TXCSUM_IPV6 | IFCAP_RXCSUM | IFCAP_RXCSUM_IPV6;
-	ifp->if_capenable = IFCAP_VLAN_MTU | IFCAP_TXCSUM |
-	    IFCAP_TXCSUM_IPV6 | IFCAP_RXCSUM | IFCAP_RXCSUM_IPV6;
+	ifp->if_capabilities =
+	    IFCAP_VLAN_MTU | IFCAP_VLAN_HWTAGGING |
+	    IFCAP_TXCSUM | IFCAP_RXCSUM |
+	    IFCAP_TXCSUM_IPV6 | IFCAP_RXCSUM_IPV6 |
+	    IFCAP_MEXTPG;
+	ifp->if_capenable = ifp->if_capabilities;
 	epair_caps_changed(ifp);
 	ifp->if_transmit = epair_transmit;
 	ifp->if_qflush = epair_qflush;

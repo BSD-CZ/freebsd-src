@@ -1,6 +1,6 @@
 /*-
- * Copyright (c) 2020-2025 The FreeBSD Foundation
- * Copyright (c) 2021-2022 Bjoern A. Zeeb
+ * Copyright (c) 2020-2026 The FreeBSD Foundation
+ * Copyright (c) 2021-2026 Bjoern A. Zeeb
  *
  * This software was developed by Björn Zeeb under sponsorship from
  * the FreeBSD Foundation.
@@ -64,6 +64,9 @@ extern int linuxkpi_debug_80211;
     printf("%s:%d: XXX LKPI80211 IMPROVE " fmt "\n", __func__, __LINE__, ##__VA_ARGS__)
 #endif
 
+#define	wiphy_dbg(_wiphy, _fmt, ...)						\
+    dev_dbg(&(_wiphy)->dev, _fmt, ##__VA_ARGS__)
+
 enum rfkill_hard_block_reasons {
 	RFKILL_HARD_BLOCK_NOT_OWNER		= BIT(0),
 };
@@ -124,6 +127,7 @@ enum ieee80211_channel_flags {
 	IEEE80211_CHAN_PSD			= BIT(12),
 	IEEE80211_CHAN_ALLOW_6GHZ_VLP_AP	= BIT(13),
 	IEEE80211_CHAN_CAN_MONITOR		= BIT(14),
+	IEEE80211_CHAN_NO_EHT			= BIT(15),
 };
 #define	IEEE80211_CHAN_NO_HT40	(IEEE80211_CHAN_NO_HT40MINUS|IEEE80211_CHAN_NO_HT40PLUS)
 
@@ -152,6 +156,8 @@ struct linuxkpi_ieee80211_channel {
 	int					orig_mpwr;
 };
 
+#define	NL80211_EHT_NSS_MAX			16
+
 struct cfg80211_bitrate_mask {
 	/* TODO FIXME */
 	struct {
@@ -159,9 +165,12 @@ struct cfg80211_bitrate_mask {
 		uint8_t				ht_mcs[IEEE80211_HT_MCS_MASK_LEN];
 		uint16_t			vht_mcs[8];
 		uint16_t			he_mcs[8];
+		uint16_t			eht_mcs[NL80211_EHT_NSS_MAX];
 		enum nl80211_txrate_gi		gi;
 		enum nl80211_he_gi		he_gi;
-		uint8_t				he_ltf;		/* XXX enum? */
+		enum nl80211_he_ltf		he_ltf;
+		enum nl80211_eht_gi		eht_gi;
+		uint8_t				eht_ltf;	/* XXX enum? */
 	} control[NUM_NL80211_BANDS];
 };
 
@@ -322,6 +331,53 @@ struct cfg80211_chan_def {
 	uint32_t			center_freq1;
 	uint32_t			center_freq2;
 	uint16_t			punctured;
+};
+
+struct cfg80211_nan_band_config {
+		/* XXX TODO */
+	struct linuxkpi_ieee80211_channel	*chan;
+	uint8_t				rssi_middle;
+	uint8_t				rssi_close;
+	uint8_t				awake_dw_interval;
+};
+
+struct cfg80211_nan_conf {
+	uint8_t				bands;
+	uint8_t				discovery_beacon_interval;
+	uint8_t				master_pref;
+	bool				enable_dw_notification;
+
+	uint16_t			scan_dwell_time;
+	uint16_t			scan_period;
+	uint16_t			extra_nan_attrs_len;
+	uint16_t			vendor_elems_len;
+
+	uint8_t				*cluster_id;
+	struct cfg80211_nan_band_config	band_cfgs[NUM_NL80211_BANDS];
+	uint8_t				*extra_nan_attrs;
+	uint8_t				*vendor_elems;
+};
+
+enum wiphy_nan_flags {
+	WIPHY_NAN_FLAGS_CONFIGURABLE_SYNC	= BIT(0),
+	WIPHY_NAN_FLAGS_USERSPACE_DE		= BIT(1),
+};
+
+/* Wi-Fi Aware (TM) specification, 9.5.15 Device Capability attribute. */
+/* Misplaced here for the moment. */
+#define	NAN_OP_MODE_PHY_MODE_MASK	0x11	/* b0 0=HT, 1=VHT, b4=1 HE supported */
+#define	NAN_OP_MODE_80P80MHZ		0x2	/* b1 */
+#define	NAN_OP_MODE_160MHZ		0x4	/* b2 */
+
+#define	NAN_DEV_CAPA_EXT_KEY_ID_SUPPORTED	0x2	/* b1 */
+#define	NAN_DEV_CAPA_NDPE_SUPPORTED		0x8	/* b3 */
+
+struct wiphy_nan_capa {
+	uint32_t			flags;				/* enum wiphy_nan_flags */
+	uint8_t				op_mode;
+	uint8_t				dev_capabilities;
+	uint8_t				n_antennas;			/* Tx/Rx bitmask, e.g., 0x22 */
+	uint16_t			max_channel_switch_time;
 };
 
 struct cfg80211_ftm_responder_stats {
@@ -970,12 +1026,14 @@ struct ieee80211_iface_limit {
 };
 
 struct ieee80211_iface_combination {
-	/* TODO FIXME */
 	const struct ieee80211_iface_limit	*limits;
-	int					n_limits;
-	int		max_interfaces, num_different_channels;
-	int		beacon_int_infra_match, beacon_int_min_gcd;
-	int		radar_detect_widths;
+	uint32_t				num_different_channels;
+	uint32_t				beacon_int_min_gcd;
+	uint16_t				max_interfaces;
+	uint8_t					n_limits;
+	uint8_t					radar_detect_widths;
+	uint8_t					radar_detect_regions;
+	bool					beacon_int_infra_match;
 };
 
 struct iface_combination_params {
@@ -1015,6 +1073,14 @@ struct survey_info {		/* net80211::struct ieee80211_channel_survey */
 	uint64_t			time_scan;
 	uint64_t			time_tx;
 	struct linuxkpi_ieee80211_channel *channel;
+};
+
+enum wiphy_bss_param_flags {
+	WIPHY_BSS_PARAM_AP_ISOLATE		= BIT(0),
+};
+
+struct bss_parameters {
+	int					ap_isolate;
 };
 
 enum wiphy_vendor_cmd_need_flags {
@@ -1138,6 +1204,13 @@ struct wiphy {
 	int					n_radio;
 	const struct wiphy_radio		*radio;
 
+	uint32_t				bss_param_support;	/* enum wiphy_bss_param_flags */
+
+	uint8_t					nan_supported_bands;
+	struct wiphy_nan_capa			nan_capa;
+
+	struct list_head			wdev_list;
+
 	int	features, hw_version;
 	int	interface_modes, max_match_sets, max_remain_on_channel_duration, max_scan_ssids, max_sched_scan_ie_len, max_sched_scan_plan_interval, max_sched_scan_plan_iterations, max_sched_scan_plans, max_sched_scan_reqs, max_sched_scan_ssids;
 	int	num_iftype_ext_capab;
@@ -1164,11 +1237,13 @@ struct wiphy {
 
 struct wireless_dev {
 		/* XXX TODO, like ic? */
-	enum nl80211_iftype			iftype;
-	uint32_t				radio_mask;
-	uint8_t					address[ETH_ALEN];
-	struct net_device			*netdev;
 	struct wiphy				*wiphy;
+	enum nl80211_iftype			iftype;
+
+	struct net_device			*netdev;
+	struct list_head			list;
+	uint8_t					address[ETH_ALEN];
+	uint32_t				radio_mask;
 };
 
 struct cfg80211_ops {
@@ -1220,7 +1295,7 @@ struct cfg80211_ops {
 	int (*dump_survey)(struct wiphy *, struct net_device *, int, struct survey_info *);
 	int (*external_auth)(struct wiphy *, struct net_device *, struct cfg80211_external_auth_params *);
         int (*set_cqm_rssi_range_config)(struct wiphy *, struct net_device *, int, int);
-
+	int (*change_bss)(struct wiphy *, struct net_device *, struct bss_parameters *);
 };
 
 
@@ -1230,6 +1305,7 @@ struct cfg80211_ops {
 
 struct wiphy *linuxkpi_wiphy_new(const struct cfg80211_ops *, size_t);
 void linuxkpi_wiphy_free(struct wiphy *wiphy);
+int linuxkpi_80211_wiphy_register(struct wiphy *);
 
 void linuxkpi_wiphy_work_queue(struct wiphy *, struct wiphy_work *);
 void linuxkpi_wiphy_work_cancel(struct wiphy *, struct wiphy_work *);
@@ -1294,8 +1370,11 @@ wiphy_dev(struct wiphy *wiphy)
 	return (wiphy->dev);
 }
 
-#define	wiphy_dereference(_w, p)					\
-    rcu_dereference_check(p, lockdep_is_held(&(_w)->mtx))
+#define	wiphy_dereference(_w, _p)					\
+    rcu_dereference_protected(_p, lockdep_is_held(&(_w)->mtx))
+
+#define	rcu_dereference_wiphy(_w, _p)					\
+    rcu_dereference_check(_p, lockdep_is_held(&(_w)->mtx))
 
 #define	wiphy_lock(_w)		mutex_lock(&(_w)->mtx)
 #define	wiphy_unlock(_w)	mutex_unlock(&(_w)->mtx)
@@ -1484,6 +1563,26 @@ cfg80211_chandef_valid(const struct cfg80211_chan_def *chandef)
 	return (false);
 }
 
+static inline enum nl80211_channel_type
+cfg80211_get_chandef_type(const struct cfg80211_chan_def *chandef)
+{
+
+	switch (chandef->width) {
+	case NL80211_CHAN_WIDTH_20_NOHT:
+		return (NL80211_CHAN_NO_HT);
+	case NL80211_CHAN_WIDTH_20:
+		return (NL80211_CHAN_HT20);
+	case NL80211_CHAN_WIDTH_40:
+		if (chandef->center_freq1 < chandef->chan->center_freq)
+			return (NL80211_CHAN_HT40MINUS);
+		return (NL80211_CHAN_HT40PLUS);
+	default:
+		WARN_ONCE(1, "%s: invalid chandef width %d\n",
+		    __func__, chandef->width);
+		return (NL80211_CHAN_NO_HT);
+	}
+}
+
 static inline int
 cfg80211_chandef_get_width(const struct cfg80211_chan_def *chandef)
 {
@@ -1502,6 +1601,13 @@ cfg80211_chandef_dfs_cac_time(struct wiphy *wiphy, const struct cfg80211_chan_de
 {
 	TODO();
 	return (0);
+}
+
+static inline void
+cfg80211_cac_event(struct net_device *netdev, const struct cfg80211_chan_def *chandef,
+    enum nl80211_radar_event re, gfp_t gfp, unsigned int link_id)
+{
+	TODO();
 }
 
 static __inline bool
@@ -1749,8 +1855,7 @@ wiphy_net(struct wiphy *wiphy)
 static __inline int
 wiphy_register(struct wiphy *wiphy)
 {
-	TODO();
-	return (0);
+	return (linuxkpi_80211_wiphy_register(wiphy));
 }
 
 static __inline void
@@ -2189,6 +2294,22 @@ cfg80211_cqm_rssi_notify(struct net_device *dev,
     enum nl80211_cqm_rssi_threshold_event rssi_te, int32_t rssi, gfp_t gfp)
 {
 	TODO();
+}
+
+/* -------------------------------------------------------------------------- */
+
+static inline void
+cfg80211_nan_cluster_joined(struct wireless_dev *wdev, const uint8_t *cluster_id,
+    bool new_cluster, gfp_t gfp)
+{
+	TODO("NAN");
+}
+
+static inline void
+cfg80211_next_nan_dw_notif(struct wireless_dev *wdev,
+    struct linuxkpi_ieee80211_channel *chan, gfp_t gfp)
+{
+	TODO("NAN");
 }
 
 /* -------------------------------------------------------------------------- */

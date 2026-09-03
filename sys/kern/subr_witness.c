@@ -148,7 +148,13 @@
  * probably be safe for the most part, but it's still a SWAG.
  */
 #define	LOCK_NCHILDREN	5
-#define	LOCK_CHILDCOUNT	2048
+#ifndef WITNESS_LOCK_CHILDCOUNT
+#define	WITNESS_LOCK_CHILDCOUNT	2048
+#endif
+
+#if WITNESS_LOCK_CHILDCOUNT < 1
+  #error "WITNESS_LOCK_CHILDCOUNT must be greater than zero"
+#endif
 
 #define	MAX_W_NAME	64
 
@@ -168,7 +174,7 @@
 #define	WITNESS_RELATED_MASK	(WITNESS_ANCESTOR_MASK | WITNESS_DESCENDANT_MASK)
 #define	WITNESS_REVERSAL	0x10	/* A lock order reversal has been observed. */
 #define	WITNESS_RESERVED1	0x20	/* Unused flag, reserved. */
-#define	WITNESS_RESERVED2	0x40	/* Unused flag, reserved. */
+#define	WITNESS_ORDER_LISTS	0x40	/* Relationship set in order_lists[]. */
 #define	WITNESS_LOCK_ORDER_KNOWN 0x80	/* This lock order is known. */
 
 /* Descendant to ancestor flags */
@@ -264,7 +270,7 @@ struct witness_lock_order_data {
  * (struct witness_lock_order_data).
  */
 struct witness_lock_order_hash {
-	struct witness_lock_order_data	*wloh_array[WITNESS_LO_HASH_SIZE];
+	struct witness_lock_order_data	**wloh_array;
 	u_int	wloh_size;
 	u_int	wloh_count;
 };
@@ -390,27 +396,45 @@ SYSCTL_INT(_debug_witness, OID_AUTO, kdb, CTLFLAG_RWTUN, &witness_kdb, 0, "");
 
 #if defined(DDB) || defined(KDB)
 /*
- * When DDB or KDB is enabled and witness_trace is 1, it will cause the system
- * to print a stack trace:
+ * When DDB or KDB is enabled and witness_trace is > 0, it will cause the system
+ * to print a stack trace when:
  *	- a lock hierarchy violation occurs
  *	- locks are held when going to sleep.
+ *
+ * Additionally, if witness_trace is 2, it will cause the system to search
+ * for all locks which established the known lock ordering and print
+ * stack traces of where the lock ordering was first established.
  */
-int	witness_trace = 1;
+int	witness_trace = 2;
 SYSCTL_INT(_debug_witness, OID_AUTO, trace, CTLFLAG_RWTUN, &witness_trace, 0, "");
 #endif /* DDB || KDB */
 
 #ifdef WITNESS_SKIPSPIN
-int	witness_skipspin = 1;
+static bool witness_skipspin = true;
 #else
-int	witness_skipspin = 0;
+static bool witness_skipspin = false;
 #endif
-SYSCTL_INT(_debug_witness, OID_AUTO, skipspin, CTLFLAG_RDTUN, &witness_skipspin, 0, "");
+SYSCTL_BOOL(_debug_witness, OID_AUTO, skipspin,
+    CTLFLAG_RDTUN | CTLFLAG_NOFETCH, &witness_skipspin, 0,
+    "Skip all witness checks on spin locks");
+TUNABLE_BOOL("debug.witness.skipspin", &witness_skipspin);
 
 int badstack_sbuf_size;
 
-int witness_count = WITNESS_COUNT;
-SYSCTL_INT(_debug_witness, OID_AUTO, witness_count, CTLFLAG_RDTUN,
-    &witness_count, 0, "");
+static u_long witness_count = WITNESS_COUNT;
+SYSCTL_ULONG(_debug_witness, OID_AUTO, witness_count,
+    CTLFLAG_RDTUN | CTLFLAG_NOFETCH, &witness_count, 0,
+    "Maximum count of lock type entries");
+
+static u_long witness_lo_data_count = WITNESS_LO_DATA_COUNT;
+SYSCTL_ULONG(_debug_witness, OID_AUTO, lock_order_data_count,
+    CTLFLAG_RDTUN | CTLFLAG_NOFETCH, &witness_lo_data_count, 0,
+    "Maximum count of lock order data (stacks) to track");
+
+static u_long witness_lo_hash_size = WITNESS_LO_HASH_SIZE;
+SYSCTL_ULONG(_debug_witness, OID_AUTO, lock_order_hash_size,
+    CTLFLAG_RDTUN | CTLFLAG_NOFETCH, &witness_lo_hash_size, 0,
+    "Hash table size for lock order data");
 
 /*
  * Output channel for witness messages.  By default we print to the console.
@@ -466,11 +490,12 @@ SYSCTL_INT(_debug_witness, OID_AUTO, sleep_cnt, CTLFLAG_RD, &w_sleep_cnt, 0,
 
 static struct witness *w_data;
 static uint8_t **w_rmatrix;
-static struct lock_list_entry w_locklistdata[LOCK_CHILDCOUNT];
+static struct lock_list_entry w_locklistdata[WITNESS_LOCK_CHILDCOUNT];
 static struct witness_hash w_hash;	/* The witness hash table. */
+static u_long w_sz;	/* Witness startup memory allocation size */
 
 /* The lock order data hash */
-static struct witness_lock_order_data w_lodata[WITNESS_LO_DATA_COUNT];
+static struct witness_lock_order_data *w_lodata;
 static struct witness_lock_order_data *w_lofree = NULL;
 static struct witness_lock_order_hash w_lohash;
 static int w_max_used_index = 0;
@@ -770,23 +795,82 @@ fixup_filename(const char *file)
 /*
  * Calculate the size of early witness structures.
  */
-int
-witness_startup_count(void)
+static u_long
+witness_startup_calc(void)
 {
-	int sz;
+	u_long sz;
 
 	sz = sizeof(struct witness) * witness_count;
 	sz += sizeof(*w_rmatrix) * (witness_count + 1);
 	sz += sizeof(*w_rmatrix[0]) * (witness_count + 1) *
 	    (witness_count + 1);
+	sz += sizeof(void *);
+	sz += sizeof(w_lodata[0]) * witness_lo_data_count;
+	sz += sizeof(w_lohash.wloh_array[0]) * witness_lo_hash_size;
+	sz = round_page(sz);
 
 	return (sz);
+}
+
+u_long
+witness_startup_count(u_long avail)
+{
+
+	/*
+	 * Tune witness.  We make an effort to protect against misconfiguration
+	 * consuming more memory than available, but we do not robustly protect
+	 * against integer overflow for all possible user-supplied values.
+	 */
+	TUNABLE_ULONG_FETCH("debug.witness.witness_count", &witness_count);
+	witness_count = ulmax(witness_count, 1);
+	TUNABLE_ULONG_FETCH("debug.witness.lock_order_data_count",
+	    &witness_lo_data_count);
+	TUNABLE_ULONG_FETCH("debug.witness.lock_order_hash_size",
+	    &witness_lo_hash_size);
+	w_sz = witness_startup_calc();
+	if (bootverbose)
+		printf("WITNESS configuration requests %lu KiB "
+		    "of startup allocations with witness_count=%lu, "
+		    "lock_order_data_count=%lu, lock_order_hash_size=%lu\n",
+		    w_sz / 1024, witness_count, witness_lo_data_count,
+		    witness_lo_hash_size);
+	if (w_sz <= avail)
+		return (w_sz);
+
+	/* Memory allocation would be too large, try fallbacks. */
+	printf("WARNING: WITNESS configuration requests %lu KiB, "
+	    "with %lu KiB available\n", w_sz / 1024, avail / 1024);
+	witness_count = ulmin(witness_count, WITNESS_COUNT);
+	witness_lo_data_count = ulmin(witness_lo_data_count,
+	    WITNESS_LO_DATA_COUNT);
+	witness_lo_hash_size = ulmin(witness_lo_hash_size,
+	    WITNESS_LO_HASH_SIZE);
+	w_sz = witness_startup_calc();
+	if (w_sz <= avail) {
+		printf("WARNING: WITNESS configuration reduced to defaults\n");
+		return (w_sz);
+	}
+
+	/* Minimize startup allocations, functionally disabling witness. */
+	witness_count = 1;
+	witness_lo_data_count = 0;
+	witness_lo_hash_size = 1;
+	w_sz = witness_startup_calc();
+	if (w_sz <= avail) {
+		printf("WARNING: WITNESS configuration defaults too large, "
+		    "lock order checks disabled\n");
+		return (w_sz);
+	}
+
+	panic("WITNESS unable to initialize with %lu KiB available",
+	    avail / 1024);
 }
 
 /*
  * The WITNESS-enabled diagnostic code.  Note that the witness code does
  * assume that the early boot is single-threaded at least until after this
- * routine is completed.
+ * routine is completed.  This routine runs during SI_SUB_VM.  Any read-only
+ * tunables need to have been initialized by now.
  */
 void
 witness_startup(void *mem)
@@ -808,6 +892,18 @@ witness_startup(void *mem)
 		w_rmatrix[i] = (void *)p;
 		p += sizeof(*w_rmatrix[i]) * (witness_count + 1);
 	}
+
+	/* Fix up alignment */
+	p = roundup2(p, sizeof(void *));
+
+	w_lodata = (void *)p;
+	p += sizeof(w_lodata[0]) * witness_lo_data_count;
+
+	w_lohash.wloh_array = (void *)p;
+	p += sizeof(w_lohash.wloh_array[0]) * witness_lo_hash_size;
+
+	MPASS(p <= (uintptr_t)mem + w_sz);
+
 	badstack_sbuf_size = witness_count * 256;
 
 	/*
@@ -838,7 +934,7 @@ witness_startup(void *mem)
 		    (witness_count + 1));
 	}
 
-	for (i = 0; i < LOCK_CHILDCOUNT; i++)
+	for (i = 0; i < WITNESS_LOCK_CHILDCOUNT; i++)
 		witness_lock_list_free(&w_locklistdata[i]);
 	witness_init_hash_tables();
 
@@ -854,6 +950,10 @@ witness_startup(void *mem)
 				continue;
 			w1->w_file = "order list";
 			itismychild(w, w1);
+			w_rmatrix[w->w_index][w1->w_index] |=
+			    WITNESS_ORDER_LISTS;
+			w_rmatrix[w1->w_index][w->w_index] |=
+			    WITNESS_ORDER_LISTS;
 			w = w1;
 		}
 	}
@@ -1075,6 +1175,240 @@ witness_ddb_display(int(*prnt)(const char *fmt, ...))
 }
 #endif /* DDB */
 
+#define	NUM_VERBOSE_STACKS	256
+#define	MAX_LOCKCHAIN_RECURSION	32
+
+/*
+ * Struct used by the verbose witness functionality. Only sb, generation,
+ * pairs, pair_count, check_generation, and alloc_flags communicate data
+ * between multiple functions. The rest are used to pre-allocate space for
+ * data which would otherwise end up on the stack.
+ */
+struct verbose_tracker {
+	struct witness	t_w1, t_w2;
+	struct stack	t_stack;
+	struct sbuf 	*sb;
+	int 		generation;
+	int		alloc_flags;
+	int		pairs[2 * NUM_VERBOSE_STACKS];
+	int		pair_count;
+	int		recursion_list[MAX_LOCKCHAIN_RECURSION];
+	int		found[MAX_LOCKCHAIN_RECURSION + 1];
+	int		iter[MAX_LOCKCHAIN_RECURSION];
+	bool		check_generation;
+};
+
+static void
+init_verbose_tracker(struct verbose_tracker *t, struct sbuf *sb,
+    int alloc_flags, bool check_generation)
+{
+
+	KASSERT(t != NULL,
+	    ("%s: NULL t argument", __func__));
+	KASSERT(alloc_flags == M_WAITOK || alloc_flags == M_NOWAIT,
+	    ("%s: Unexpected alloc_flags %d", __func__, alloc_flags));
+	t->sb = sb;
+	t->check_generation = check_generation;
+	t->alloc_flags = alloc_flags;
+}
+
+static void
+reset_verbose_tracker(struct verbose_tracker *t, int generation)
+{
+
+	KASSERT(t != NULL,
+	    ("%s: NULL t argument", __func__));
+	t->pair_count = 0;
+	t->generation = generation;
+}
+
+static bool
+has_verbose_lockpair(const struct verbose_tracker *t, int from, int to)
+{
+	int i;
+
+	/* Look for value. */
+	for (i = 0; i < (2 * t->pair_count); i += 2)
+		if (t->pairs[i] == from && t->pairs[i + 1] == to)
+			return (true);
+	return (false);
+}
+
+static void
+add_verbose_lockpair(struct verbose_tracker *t, int from, int to)
+{
+
+	/* Check for duplicates. */
+	if (has_verbose_lockpair(t, from, to))
+		return;
+
+	/* Add a new value. */
+	if (t->pair_count < NUM_VERBOSE_STACKS) {
+		t->pairs[t->pair_count * 2] = from;
+		t->pairs[(t->pair_count * 2) + 1] = to;
+		t->pair_count++;
+	}
+}
+
+static void
+sbuf_print_verbose_witness_chains(struct verbose_tracker *t, int from, int to)
+{
+	struct witness *w1, *w2;
+	int i, recursion_count;
+
+	recursion_count = 0;
+
+	mtx_lock_spin(&w_mtx);
+	if (t->check_generation && t->generation != w_generation) {
+		mtx_unlock_spin(&w_mtx);
+
+		/*
+		 * The graph has changed. Break the recursion loop.
+		 * The calling function should figure out what happened and
+		 * restart.
+		 */
+		return;
+	}
+
+top:
+	t->found[recursion_count] = 0;
+
+	/*
+	 * Check for a direct dependence. If so, print that here.
+	 * However, we keep scanning just in case there are other
+	 * locking paths between these two locks.
+	 */
+	w1 = &w_data[from];
+	w2 = &w_data[to];
+	if (isitmychild(w1, w2)) {
+		t->t_w1 = *w1;
+		t->t_w2 = *w2;
+		mtx_unlock_spin(&w_mtx);
+
+		sbuf_printf(t->sb, "\"%s\" -> \"%s\"",
+		    t->t_w1.w_name, t->t_w2.w_name);
+
+		/* Add the lockchain which got us here. */
+		KASSERT(recursion_count >= 0 &&
+		    recursion_count <= MAX_LOCKCHAIN_RECURSION,
+		    ("Invalid recursion_count: %d", recursion_count));
+		for (i = recursion_count - 1; i >= 0; i--) {
+			mtx_lock_spin(&w_mtx);
+			if (t->check_generation &&
+			    t->generation != w_generation) {
+				mtx_unlock_spin(&w_mtx);
+				/* The graph has changed. */
+				return;
+			}
+			/*
+			 * Make a local copy, drop the lock, and add the lock
+			 * to the sbuf.
+			 */
+			t->t_w1 = w_data[t->recursion_list[i]];
+			mtx_unlock_spin(&w_mtx);
+			sbuf_printf(t->sb, " -> \"%s\"", t->t_w1.w_name);
+		}
+
+		sbuf_putc(t->sb, '\n');
+		add_verbose_lockpair(t, from, to);
+		t->found[recursion_count]++;
+
+		mtx_lock_spin(&w_mtx);
+		if (t->check_generation && t->generation != w_generation) {
+			mtx_unlock_spin(&w_mtx);
+			return;
+		}
+	}
+
+	/*
+	 * Ensure we aren't recursing too many times. We do this check
+	 * after looking for direct dependencies so we don't fail to
+	 * catch at least those at the limits of our recursion.
+	 */
+	if (recursion_count >= MAX_LOCKCHAIN_RECURSION)
+		goto end;
+
+	/*
+	 * Record our 'to' lock on the recursion list. We will use this
+	 * to build successful lock chains later.
+	 */
+	t->recursion_list[recursion_count] = to;
+	t->iter[recursion_count] = 1;
+
+loop:
+	/* Walk all parents of 'to' to see if any have a path to 'from'. */
+	for (; t->iter[recursion_count] < w_max_used_index;
+	    t->iter[recursion_count]++) {
+		if (t->iter[recursion_count] == to ||
+		    t->iter[recursion_count] == from)
+			continue;
+		if (isitmychild(&w_data[t->iter[recursion_count]],
+		    &w_data[to])) {
+			/* Recurse to the parent. */
+			to = t->iter[recursion_count];
+			recursion_count++;
+			goto top;
+		}
+	}
+end:
+	if (recursion_count != 0) {
+		recursion_count--;
+		to = t->recursion_list[recursion_count];
+		if (t->found[recursion_count + 1] > 0) {
+			add_verbose_lockpair(t, t->iter[recursion_count], to);
+			t->found[recursion_count]++;
+		}
+		t->iter[recursion_count]++;
+		goto loop;
+	}
+	mtx_unlock_spin(&w_mtx);
+}
+
+static void
+sbuf_print_verbose_witness_stacks(struct verbose_tracker *t)
+{
+	struct witness_lock_order_data *data;
+	int i;
+	bool hardcoded;
+
+	for (i = 0; i < (2 * t->pair_count); i += 2) {
+		mtx_lock_spin(&w_mtx);
+		if (t->check_generation && t->generation != w_generation) {
+			/*
+			 * The graph has changed. Return to the calling
+			 * function so it can restart.
+			 */
+			mtx_unlock_spin(&w_mtx);
+			break;
+		}
+
+		/*
+		 * Make a local copy of the data we need so we can drop
+		 * the lock.
+		 */
+		t->t_w1 = w_data[t->pairs[i]];
+		t->t_w2 = w_data[t->pairs[i + 1]];
+		data = witness_lock_order_get(&t->t_w1, &t->t_w2);
+		if (data != NULL)
+			stack_copy(&data->wlod_stack, &t->t_stack);
+		hardcoded = (w_rmatrix[t->pairs[i]][t->pairs[i + 1]] &
+		    WITNESS_ORDER_LISTS) == WITNESS_ORDER_LISTS;
+		mtx_unlock_spin(&w_mtx);
+
+		sbuf_printf(t->sb,
+		    "%slock order \"%s\"(%s) -> \"%s\"(%s) first seen at:\n",
+		    hardcoded ? "hardcoded " : "",
+		    t->t_w1.w_name, t->t_w1.w_class->lc_name,
+		    t->t_w2.w_name, t->t_w2.w_class->lc_name);
+		if (data != NULL)
+			stack_sbuf_print_flags(t->sb, &t->t_stack,
+			    t->alloc_flags, STACK_SBUF_FMT_LONG);
+		else
+			sbuf_printf(t->sb, "(No stack trace)\n");
+		sbuf_putc(t->sb, '\n');
+	}
+}
+
 int
 witness_defineorder(struct lock_object *lock1, struct lock_object *lock2)
 {
@@ -1117,6 +1451,7 @@ witness_checkorder(struct lock_object *lock, int flags, const char *file,
 	struct witness *w, *w1;
 	struct thread *td;
 	int i, j;
+	bool print_lock_order;
 
 	if (witness_cold || witness_watch < 1 || lock->lo_witness == NULL ||
 	    KERNEL_PANICKED())
@@ -1279,9 +1614,10 @@ witness_checkorder(struct lock_object *lock, int flags, const char *file,
 	for (j = 0, lle = lock_list; lle != NULL; lle = lle->ll_next) {
 		for (i = lle->ll_count - 1; i >= 0; i--, j++) {
 			struct stack pstack;
-			bool pstackv, trace;
+			int trace;
+			bool pstackv;
 
-			MPASS(j < LOCK_CHILDCOUNT * LOCK_NCHILDREN);
+			MPASS(j < WITNESS_LOCK_CHILDCOUNT * LOCK_NCHILDREN);
 			lock1 = &lle->ll_children[i];
 
 			/*
@@ -1396,6 +1732,7 @@ witness_checkorder(struct lock_object *lock, int flags, const char *file,
 			/*
 			 * Ok, yell about it.
 			 */
+			print_lock_order = false;
 			if ((lock->lo_flags & LO_SLEEPABLE) != 0 &&
 			    (flags & LOP_NOSLEEP) == 0 &&
 			    (lock1->li_flags & LI_SLEEPABLE) == 0)
@@ -1405,8 +1742,11 @@ witness_checkorder(struct lock_object *lock, int flags, const char *file,
 			    && lock == &Giant.lock_object)
 				witness_output(
 		"lock order reversal: (Giant after non-sleepable)\n");
-			else
+			else {
 				witness_output("lock order reversal:\n");
+				if (lock_list == td->td_sleeplocks)
+					print_lock_order = true;
+			}
 
 			/*
 			 * Try to locate an earlier lock with
@@ -1455,6 +1795,7 @@ witness_checkorder(struct lock_object *lock, int flags, const char *file,
 			if (trace) {
 				char buf[64];
 				struct sbuf sb;
+				struct verbose_tracker *t;
 
 				sbuf_new(&sb, buf, sizeof(buf), SBUF_FIXEDLEN);
 				sbuf_set_drain(&sb, witness_output_drain,
@@ -1466,6 +1807,37 @@ witness_checkorder(struct lock_object *lock, int flags, const char *file,
 					    w->w_name, w1->w_name);
 					stack_sbuf_print_flags(&sb, &pstack,
 					    M_NOWAIT, STACK_SBUF_FMT_LONG);
+				} else if (trace > 1 && print_lock_order &&
+				    (t = malloc(sizeof(struct verbose_tracker),
+				    M_TEMP, M_NOWAIT | M_ZERO)) != NULL) {
+					/*
+					 * We make a purposeful decision to
+					 * ignore generation changes while
+					 * printing. The two locks in
+					 * question are in use, so won't be
+					 * going away. There is a small
+					 * chance that intermediate locks
+					 * in a lock chain get destroyed
+					 * while we are traversing the
+					 * chain or printing them, but even
+					 * then nothing "bad" should happen
+					 * with the current code since the
+					 * WITNESS objects are not actually
+					 * freed and re-used. If that changes,
+					 * we might need to reassess the
+					 * decision to ignore generation.
+					 */
+					init_verbose_tracker(t, &sb, M_NOWAIT,
+					    false);
+					reset_verbose_tracker(t, 0);
+					sbuf_printf(&sb,
+					    "All lock orders from %s -> %s:\n",
+					    w->w_name, w1->w_name);
+					sbuf_print_verbose_witness_chains(t,
+					    w->w_index, w1->w_index);
+					sbuf_putc(&sb, '\n');
+					sbuf_print_verbose_witness_stacks(t);
+					free(t, M_TEMP);
 				}
 
 				sbuf_printf(&sb,
@@ -1857,6 +2229,15 @@ witness_warn(int flags, struct lock_object *lock, const char *fmt, ...)
 		n += witness_list_locks(&lock_list, printf);
 	} else
 		sched_unpin();
+
+	if (td->td_no_sleeping != 0 && (flags & WARN_SLEEPOK) != 0) {
+		va_start(ap, fmt);
+		vprintf(fmt, ap);
+		va_end(ap);
+		printf(" with %d sleep inhibitors\n", td->td_no_sleeping);
+		n += td->td_no_sleeping;
+	}
+
 	if (flags & WARN_PANIC && n)
 		kassert_panic("%s", __func__);
 	else
@@ -2645,16 +3026,14 @@ DB_SHOW_COMMAND_FLAGS(witness, db_witness_display, DB_CMD_MEMSAFE)
 #endif
 
 static void
-sbuf_print_witness_badstacks(struct sbuf *sb, size_t *oldidx)
+sbuf_print_witness_badstacks(struct sbuf *sb, size_t *oldidx,
+    bool check_generation)
 {
 	struct witness_lock_order_data *data1, *data2, *tmp_data1, *tmp_data2;
 	struct witness *tmp_w1, *tmp_w2, *w1, *w2;
+	struct verbose_tracker *t;
 	int generation, i, j;
-
-	tmp_data1 = NULL;
-	tmp_data2 = NULL;
-	tmp_w1 = NULL;
-	tmp_w2 = NULL;
+	bool w1_is_parent, w2_is_parent;
 
 	/* Allocate and init temporary storage space. */
 	tmp_w1 = malloc(sizeof(struct witness), M_TEMP, M_WAITOK | M_ZERO);
@@ -2665,16 +3044,19 @@ sbuf_print_witness_badstacks(struct sbuf *sb, size_t *oldidx)
 	    M_WAITOK | M_ZERO);
 	stack_zero(&tmp_data1->wlod_stack);
 	stack_zero(&tmp_data2->wlod_stack);
+	t = malloc(sizeof(struct verbose_tracker), M_TEMP, M_WAITOK | M_ZERO);
+	init_verbose_tracker(t, sb, M_WAITOK, check_generation);
 
 restart:
 	mtx_lock_spin(&w_mtx);
 	generation = w_generation;
 	mtx_unlock_spin(&w_mtx);
+	reset_verbose_tracker(t, generation);
 	sbuf_printf(sb, "Number of known direct relationships is %d\n",
 	    w_lohash.wloh_count);
 	for (i = 1; i < w_max_used_index; i++) {
 		mtx_lock_spin(&w_mtx);
-		if (generation != w_generation) {
+		if (check_generation && generation != w_generation) {
 			mtx_unlock_spin(&w_mtx);
 
 			/* The graph has changed, try again. */
@@ -2700,7 +3082,7 @@ restart:
 				continue;
 
 			mtx_lock_spin(&w_mtx);
-			if (generation != w_generation) {
+			if (check_generation && generation != w_generation) {
 				mtx_unlock_spin(&w_mtx);
 
 				/* The graph has changed, try again. */
@@ -2729,6 +3111,8 @@ restart:
 				stack_copy(&data2->wlod_stack,
 				    &tmp_data2->wlod_stack);
 			}
+			w1_is_parent = isitmydescendant(w1, w2);
+			w2_is_parent = isitmydescendant(w2, w1);
 			mtx_unlock_spin(&w_mtx);
 
 			if (blessed(tmp_w1, tmp_w2))
@@ -2738,26 +3122,49 @@ restart:
 	    "\nLock order reversal between \"%s\"(%s) and \"%s\"(%s)!\n",
 			    tmp_w1->w_name, tmp_w1->w_class->lc_name,
 			    tmp_w2->w_name, tmp_w2->w_class->lc_name);
-			if (data1) {
+			if (w1_is_parent || data1 != NULL) {
 				sbuf_printf(sb,
-			"Lock order \"%s\"(%s) -> \"%s\"(%s) first seen at:\n",
+			    "All lock orders from \"%s\"(%s) -> \"%s\"(%s):\n",
 				    tmp_w1->w_name, tmp_w1->w_class->lc_name,
 				    tmp_w2->w_name, tmp_w2->w_class->lc_name);
-				stack_sbuf_print(sb, &tmp_data1->wlod_stack);
+				if (w1_is_parent)
+					sbuf_print_verbose_witness_chains(t, i,
+					    j);
+				if (data1 && !has_verbose_lockpair(t, i, j)) {
+					sbuf_printf(t->sb,
+					    "** \"%s\" -> \"%s\"\n",
+					    tmp_w1->w_name, tmp_w2->w_name);
+					add_verbose_lockpair(t, i, j);
+				}
 				sbuf_putc(sb, '\n');
+				sbuf_print_verbose_witness_stacks(t);
+				sbuf_putc(sb, '\n');
+				reset_verbose_tracker(t, generation);
 			}
-			if (data2 && data2 != data1) {
+			if (w2_is_parent || (data2 != NULL && data2 != data1)) {
 				sbuf_printf(sb,
-			"Lock order \"%s\"(%s) -> \"%s\"(%s) first seen at:\n",
+			    "All lock orders from \"%s\"(%s) -> \"%s\"(%s):\n",
 				    tmp_w2->w_name, tmp_w2->w_class->lc_name,
 				    tmp_w1->w_name, tmp_w1->w_class->lc_name);
-				stack_sbuf_print(sb, &tmp_data2->wlod_stack);
+				if (w2_is_parent)
+					sbuf_print_verbose_witness_chains(t, j,
+					    i);
+				if (data2 && data2 != data1 &&
+				    !has_verbose_lockpair(t, j, i)) {
+					sbuf_printf(t->sb,
+					    "** \"%s\" -> \"%s\"\n",
+					    tmp_w2->w_name, tmp_w1->w_name);
+					add_verbose_lockpair(t, j, i);
+				}
 				sbuf_putc(sb, '\n');
+				sbuf_print_verbose_witness_stacks(t);
+				sbuf_putc(sb, '\n');
+				reset_verbose_tracker(t, generation);
 			}
 		}
 	}
 	mtx_lock_spin(&w_mtx);
-	if (generation != w_generation) {
+	if (check_generation && generation != w_generation) {
 		mtx_unlock_spin(&w_mtx);
 
 		/*
@@ -2775,6 +3182,7 @@ restart:
 	free(tmp_data2, M_TEMP);
 	free(tmp_w1, M_TEMP);
 	free(tmp_w2, M_TEMP);
+	free(t, M_TEMP);
 }
 
 static int
@@ -2796,7 +3204,7 @@ sysctl_debug_witness_badstacks(SYSCTL_HANDLER_ARGS)
 	if (sb == NULL)
 		return (ENOMEM);
 
-	sbuf_print_witness_badstacks(sb, &req->oldidx);
+	sbuf_print_witness_badstacks(sb, &req->oldidx, true);
 
 	sbuf_finish(sb);
 	error = SYSCTL_OUT(req, sbuf_data(sb), sbuf_len(sb) + 1);
@@ -2806,12 +3214,6 @@ sysctl_debug_witness_badstacks(SYSCTL_HANDLER_ARGS)
 }
 
 #ifdef DDB
-static int
-sbuf_db_printf_drain(void *arg __unused, const char *data, int len)
-{
-	return (db_printf("%.*s", len, data));
-}
-
 DB_SHOW_COMMAND_FLAGS(badstacks, db_witness_badstacks, DB_CMD_MEMSAFE)
 {
 	struct sbuf sb;
@@ -2820,7 +3222,7 @@ DB_SHOW_COMMAND_FLAGS(badstacks, db_witness_badstacks, DB_CMD_MEMSAFE)
 
 	sbuf_new(&sb, buffer, sizeof(buffer), SBUF_FIXEDLEN);
 	sbuf_set_drain(&sb, sbuf_db_printf_drain, NULL);
-	sbuf_print_witness_badstacks(&sb, &dummy);
+	sbuf_print_witness_badstacks(&sb, &dummy, false);
 	sbuf_finish(&sb);
 }
 #endif
@@ -2985,14 +3387,14 @@ witness_init_hash_tables(void)
 
 	/* Initialize the lock order data hash. */
 	w_lofree = NULL;
-	for (i = 0; i < WITNESS_LO_DATA_COUNT; i++) {
+	for (i = 0; i < witness_lo_data_count; i++) {
 		memset(&w_lodata[i], 0, sizeof(w_lodata[i]));
 		w_lodata[i].wlod_next = w_lofree;
 		w_lofree = &w_lodata[i];
 	}
-	w_lohash.wloh_size = WITNESS_LO_HASH_SIZE;
+	w_lohash.wloh_size = witness_lo_hash_size;
 	w_lohash.wloh_count = 0;
-	for (i = 0; i < WITNESS_LO_HASH_SIZE; i++)
+	for (i = 0; i < w_lohash.wloh_size; i++)
 		w_lohash.wloh_array[i] = NULL;
 }
 
@@ -3099,13 +3501,13 @@ witness_lock_order_add(struct witness *parent, struct witness *child)
 	    & WITNESS_LOCK_ORDER_KNOWN)
 		return (1);
 
-	hash = witness_hash_djb2((const char *)&key,
-	    sizeof(key)) % w_lohash.wloh_size;
 	w_rmatrix[parent->w_index][child->w_index] |= WITNESS_LOCK_ORDER_KNOWN;
 	data = w_lofree;
 	if (data == NULL)
 		return (0);
 	w_lofree = data->wlod_next;
+	hash = witness_hash_djb2((const char *)&key,
+	    sizeof(key)) % w_lohash.wloh_size;
 	data->wlod_next = w_lohash.wloh_array[hash];
 	data->wlod_key = key;
 	w_lohash.wloh_array[hash] = data;

@@ -277,15 +277,25 @@ void	ptrauth_thread0(struct thread *);
 void	ptrauth_mp_start(uint64_t);
 #endif
 
+/* Memory Tagging Extension (MTE) support */
+void	mte_fork(struct thread *, struct thread *);
+void	mte_exec(struct thread *);
+void	mte_copy_thread(struct thread *, struct thread *);
+void	mte_thread_alloc(struct thread *);
+void	mte_thread0(struct thread *);
+
+void	mte_sync_tags(vm_page_t page);
+void	mte_copy_tags(vm_page_t, vm_page_t, char *, char *);
+
 /* Functions to read the sanitised view of the special registers */
 void	update_special_regs(u_int);
 void	update_special_reg_iss(u_int, uint64_t, uint64_t);
 #define	update_special_reg(reg, clear, set)			\
     update_special_reg_iss(reg ## _ISS, clear, set)
-bool	get_kernel_reg_iss(u_int, uint64_t *);
+void	get_kernel_reg_iss(u_int, uint64_t *);
 #define	get_kernel_reg(reg, valp)				\
     get_kernel_reg_iss(reg ## _ISS, valp)
-bool	get_kernel_reg_iss_masked(u_int, uint64_t *, uint64_t);
+void	get_kernel_reg_iss_masked(u_int, uint64_t *, uint64_t);
 #define	get_kernel_reg_masked(reg, valp, mask)			\
     get_kernel_reg_iss_masked(reg ## _ISS, valp, mask)
 bool	get_user_reg_iss(u_int, uint64_t *, bool);
@@ -328,7 +338,12 @@ ADDRESS_TRANSLATE_FUNC(s1e1r)
 ADDRESS_TRANSLATE_FUNC(s1e1w)
 
 #endif /* !__ASSEMBLER__ */
-#endif
+
+#define MEMSET_EARLY_FUNC	memset_std
+#define MEMCPY_EARLY_FUNC	memcpy_std
+#define MEMMOVE_EARLY_FUNC	memmove_std
+
+#endif /* _KERNEL */
 
 #endif /* !_MACHINE_CPU_H_ */
 

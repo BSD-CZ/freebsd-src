@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 1984-2025  Mark Nudelman
+ * Copyright (C) 1984-2026  Mark Nudelman
  *
  * You may distribute under the terms of either the GNU General Public
  * License or the Less License, as specified in the README file.
@@ -29,7 +29,7 @@ public unsigned less_acp = CP_ACP;
 
 public char *   every_first_cmd = NULL;
 public lbool    new_file;
-public int      is_tty;
+public lbool    is_tty;
 public IFILE    curr_ifile = NULL_IFILE;
 public IFILE    old_ifile = NULL_IFILE;
 public struct scrpos initial_scrpos;
@@ -38,8 +38,9 @@ public POSITION end_attnpos = NULL_POSITION;
 public int      wscroll;
 public constant char *progname;
 public lbool    quitting = FALSE;
-public int      dohelp;
+public lbool    dohelp = FALSE;
 public char *   init_header = NULL;
+public char *   no_config = NULL;
 static int      secure_allow_features;
 
 #if LOGFILE
@@ -67,7 +68,7 @@ public time_type less_start_time;
 static wchar_t consoleTitle[256];
 #endif
 
-public int      one_screen;
+public lbool    one_screen;
 extern int      less_is_more;
 extern lbool    missing_cap;
 extern int      know_dumb;
@@ -75,8 +76,9 @@ extern int      quit_if_one_screen;
 extern int      no_init;
 extern int      errmsgs;
 extern int      redraw_on_quit;
-extern int      term_init_done;
+extern int      term_addrs;
 extern lbool    first_time;
+extern lbool    term_init_ever;
 
 #if MSDOS_COMPILER==WIN32C && (defined(__MINGW32__) || defined(_MSC_VER))
 /* malloc'ed 0-terminated utf8 of 0-terminated wide ws, or null on errors */
@@ -156,26 +158,16 @@ cleanup:
 }
 #endif
 
-#if !SECURE
-static int security_feature_error(constant char *type, size_t len, constant char *name)
-{
-	PARG parg;
-	size_t msglen = len + strlen(type) + 64;
-	char *msg = ecalloc(msglen, sizeof(char));
-	SNPRINTF3(msg, msglen, "LESSSECURE_ALLOW: %s feature name \"%.*s\"", type, (int) len, name);
-	parg.p_string = msg;
-	error("%s", &parg);
-	free(msg);
-	return 0;
-}
-
 /*
- * Return the SF_xxx value of a secure feature given the name of the feature.
+ * Set the secure_allow_features bitmask, which controls
+ * whether certain secure features are allowed.
  */
-static int security_feature(constant char *name, size_t len)
+static void init_secure(void)
 {
-	struct secure_feature { constant char *name; int sf_value; };
-	static struct secure_feature features[] = {
+#if SECURE
+	secure_allow_features = 0;
+#else
+	static struct csl_bitmap_def security_features[] = {
 		{ "edit",     SF_EDIT },
 		{ "examine",  SF_EXAMINE },
 		{ "glob",     SF_GLOB },
@@ -189,33 +181,6 @@ static int security_feature(constant char *name, size_t len)
 		{ "stop",     SF_STOP },
 		{ "tags",     SF_TAGS },
 	};
-	int i;
-	int match = -1;
-
-	for (i = 0;  i < countof(features);  i++)
-	{
-		if (strncmp(features[i].name, name, len) == 0)
-		{
-			if (match >= 0) /* name is ambiguous */
-				return security_feature_error("ambiguous", len, name);
-			match = i;
-		}
-	}
-	if (match < 0)
-		return security_feature_error("invalid", len, name);
-	return features[match].sf_value;
-}
-#endif /* !SECURE */
-
-/*
- * Set the secure_allow_features bitmask, which controls
- * whether certain secure features are allowed.
- */
-static void init_secure(void)
-{
-#if SECURE
-	secure_allow_features = 0;
-#else
 	constant char *str = lgetenv("LESSSECURE");
 	if (isnullenv(str))
 		secure_allow_features = ~0; /* allow everything */
@@ -224,19 +189,8 @@ static void init_secure(void)
 
 	str = lgetenv("LESSSECURE_ALLOW");
 	if (!isnullenv(str))
-	{
-		for (;;)
-		{
-			constant char *estr;
-			while (*str == ' ' || *str == ',') ++str; /* skip leading spaces/commas */
-			if (*str == '\0') break;
-			estr = strchr(str, ',');
-			if (estr == NULL) estr = str + strlen(str);
-			while (estr > str && estr[-1] == ' ') --estr; /* trim trailing spaces */
-			secure_allow_features |= security_feature(str, ptr_diff(estr, str));
-			str = estr;
-		}
-	}
+		secure_allow_features = parse_csl_bitmap(str,
+		    security_features, countof(security_features), "LESSSECURE_ALLOW");
 #endif
 }
 
@@ -251,8 +205,11 @@ int main(int argc, constant char *argv[])
 	struct xbuffer xfiles;
 	constant int *files;
 	size_t num_files;
+	size_t f;
 	lbool end_opts = FALSE;
-	lbool posixly_correct = FALSE;
+	lbool posixly_correct;
+
+	no_config = getenv("LESSNOCONFIG");
 
 #if MSDOS_COMPILER==WIN32C && (defined(__MINGW32__) || defined(_MSC_VER))
 	if (GetACP() != CP_UTF8)  /* not using a UTF-8 manifest */
@@ -295,7 +252,7 @@ int main(int argc, constant char *argv[])
 	 * Process command line arguments and LESS environment arguments.
 	 * Command line arguments override environment arguments.
 	 */
-	is_tty = isatty(1);
+	is_tty = (isatty(1) != 0);
 	init_mark();
 	init_cmds();
 	init_poll();
@@ -325,7 +282,7 @@ int main(int argc, constant char *argv[])
 #define isoptstring(s)  less_is_more ? (((s)[0] == '-') && (s)[1] != '\0') : \
 			(((s)[0] == '-' || (s)[0] == '+') && (s)[1] != '\0')
 	xbuf_init(&xfiles);
-	posixly_correct = (getenv("POSIXLY_CORRECT") != NULL);
+	posixly_correct = (lgetenv("POSIXLY_CORRECT") != NULL);
 	for (i = 0;  i < argc;  i++)
 	{
 		if (strcmp(argv[i], "--") == 0)
@@ -336,7 +293,7 @@ int main(int argc, constant char *argv[])
 		{
 			if (posixly_correct)
 				end_opts = TRUE;
-			xbuf_add_data(&xfiles, (constant unsigned char *) &i, sizeof(i));
+			xbuf_add_data(&xfiles, &i, sizeof(i));
 		}
 	}
 #undef isoptstring
@@ -354,7 +311,8 @@ int main(int argc, constant char *argv[])
 	if (less_is_more)
 		no_init = TRUE;
 
-	get_term();
+	if (is_tty)
+		get_term();
 	expand_cmd_tables();
 
 #if EDITOR
@@ -379,7 +337,7 @@ int main(int argc, constant char *argv[])
 		ifile = get_ifile(FAKE_HELPFILE, ifile);
 	files = (constant int *) xfiles.data;
 	num_files = xfiles.end / sizeof(int);
-	for (i = 0;  i < num_files;  i++)
+	for (f = 0;  f < num_files;  f++)
 	{
 #if (MSDOS_COMPILER && MSDOS_COMPILER != DJGPPC)
 		/*
@@ -393,7 +351,7 @@ int main(int argc, constant char *argv[])
 		char *gfilename;
 		char *qfilename;
 		
-		gfilename = lglob(argv[files[i]]);
+		gfilename = lglob(argv[files[f]]);
 		init_textlist(&tlist, gfilename);
 		filename = NULL;
 		while ((filename = forw_textlist(&tlist, filename)) != NULL)
@@ -405,7 +363,7 @@ int main(int argc, constant char *argv[])
 		}
 		free(gfilename);
 #else
-		(void) get_ifile(argv[files[i]], ifile);
+		(void) get_ifile(argv[files[f]], ifile);
 		ifile = prev_ifile(NULL_IFILE);
 #endif
 	}
@@ -420,10 +378,10 @@ int main(int argc, constant char *argv[])
 		 * Output is not a tty.
 		 * Just copy the input file(s) to output.
 		 */
-		set_output(1); /* write to stdout */
 		SET_BINARY(1);
 		if (edit_first() == 0)
 		{
+			set_output(1, TRUE); /* write to stdout */
 			do {
 				cat_file();
 			} while (edit_next(1) == 0);
@@ -476,7 +434,7 @@ int main(int argc, constant char *argv[])
 		/*
 		 * See if file fits on one screen to decide whether 
 		 * to send terminal init. But don't need this 
-		 * if -X (no_init) overrides this (see init()).
+		 * if -X (no_init) overrides this (see term_init()).
 		 */
 		if (quit_if_one_screen)
 		{
@@ -504,8 +462,10 @@ int main(int argc, constant char *argv[])
 		get_return();
 		putchr('\n');
 	}
-	set_output(1);
-	init();
+	set_output(1, FALSE);
+#if MSDOS_COMPILER
+	term_init();
+#endif
 	commands();
 	quit(QUIT_OK);
 	/*NOTREACHED*/
@@ -617,9 +577,9 @@ public void quit(int status)
 	check_altpipe_error();
 	if (interactive())
 		clear_bot();
-	deinit();
+	term_deinit();
 	flush();
-	if (redraw_on_quit && term_init_done)
+	if (redraw_on_quit && term_addrs)
 	{
 		/*
 		 * The last file text displayed might have been on an 

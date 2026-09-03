@@ -80,11 +80,13 @@
 #include <machine/cpu_feat.h>
 #include <machine/debug_monitor.h>
 #include <machine/hypervisor.h>
+#include <machine/ifunc.h>
 #include <machine/kdb.h>
 #include <machine/machdep.h>
 #include <machine/metadata.h>
 #include <machine/md_var.h>
 #include <machine/pcb.h>
+#include <machine/rsi.h>
 #include <machine/undefined.h>
 #include <machine/vmparam.h>
 
@@ -102,6 +104,7 @@
 #include <dev/ofw/openfirm.h>
 #endif
 
+#include <dev/psci/psci.h>
 #include <dev/smbios/smbios.h>
 
 _Static_assert(sizeof(struct pcb) == 1248, "struct pcb is incorrect size");
@@ -128,6 +131,7 @@ uintptr_t boot_canary = 0x49a2d892bc05a0b1ul;
 #endif
 
 static struct trapframe proc0_tf;
+static struct pcb pcb0;
 
 int early_boot = 1;
 int cold = 1;
@@ -154,13 +158,6 @@ uintptr_t socdev_va __read_mostly;
 vm_paddr_t efi_systbl_phys;
 static struct efi_map_header *efihdr;
 
-/* pagezero_* implementations are provided in support.S */
-void pagezero_simple(void *);
-void pagezero_cache(void *);
-
-/* pagezero_simple is default pagezero */
-void (*pagezero)(void *p) = pagezero_simple;
-
 int (*apei_nmi)(void);
 
 #if defined(PERTHREAD_SSP_WARNING)
@@ -178,8 +175,7 @@ pan_check(const struct cpu_feat *feat __unused, u_int midr __unused)
 {
 	uint64_t id_aa64mfr1;
 
-	if (!get_kernel_reg(ID_AA64MMFR1_EL1, &id_aa64mfr1))
-		return (FEAT_ALWAYS_DISABLE);
+	get_kernel_reg(ID_AA64MMFR1_EL1, &id_aa64mfr1);
 	if (ID_AA64MMFR1_PAN_VAL(id_aa64mfr1) == ID_AA64MMFR1_PAN_NONE)
 		return (FEAT_ALWAYS_DISABLE);
 
@@ -217,6 +213,40 @@ pan_disabled(const struct cpu_feat *feat __unused)
 
 CPU_FEAT(feat_pan, "Privileged access never",
     pan_check, NULL, pan_enable, pan_disabled,
+    CPU_FEAT_AFTER_DEV | CPU_FEAT_PER_CPU);
+
+static cpu_feat_en
+mops_check(const struct cpu_feat *feat __unused, u_int midr __unused)
+{
+	uint64_t id_aa64isar2;
+
+	get_kernel_reg(ID_AA64ISAR2_EL1, &id_aa64isar2);
+	if (ID_AA64ISAR2_MOPS_VAL(id_aa64isar2) == ID_AA64ISAR2_MOPS_NONE)
+		return (FEAT_ALWAYS_DISABLE);
+
+	return (FEAT_DEFAULT_ENABLE);
+}
+
+static bool
+mops_enable(const struct cpu_feat *feat __unused,
+    cpu_feat_errata errata_status __unused, u_int *errata_list __unused,
+    u_int errata_count __unused)
+{
+	WRITE_SPECIALREG(sctlr_el1, READ_SPECIALREG(sctlr_el1) | SCTLR_MSCEn);
+	isb();
+
+	return (true);
+}
+
+static void
+mops_disabled(const struct cpu_feat *feat __unused)
+{
+	WRITE_SPECIALREG(sctlr_el1, READ_SPECIALREG(sctlr_el1) & ~SCTLR_MSCEn);
+	isb();
+}
+
+CPU_FEAT(feat_mops, "MOPS",
+    mops_check, NULL, mops_enable, mops_disabled,
     CPU_FEAT_AFTER_DEV | CPU_FEAT_PER_CPU);
 
 bool
@@ -401,7 +431,7 @@ makectx(struct trapframe *tf, struct pcb *pcb)
 }
 
 static void
-init_proc0(vm_offset_t kstack)
+init_proc0(void *kstack)
 {
 	struct pcpu *pcpup;
 
@@ -414,14 +444,14 @@ init_proc0(vm_offset_t kstack)
 #if defined(PERTHREAD_SSP)
 	thread0.td_md.md_canary = boot_canary;
 #endif
-	thread0.td_pcb = (struct pcb *)(thread0.td_kstack +
-	    thread0.td_kstack_pages * PAGE_SIZE) - 1;
+	thread0.td_pcb = &pcb0;
 	thread0.td_pcb->pcb_flags = 0;
 	thread0.td_pcb->pcb_fpflags = 0;
 	thread0.td_pcb->pcb_fpusaved = &thread0.td_pcb->pcb_fpustate;
 	thread0.td_pcb->pcb_vfpcpu = UINT_MAX;
 	thread0.td_frame = &proc0_tf;
 	ptrauth_thread0(&thread0);
+	mte_thread0(&thread0);
 	pcpup->pc_curpcb = thread0.td_pcb;
 
 	/*
@@ -457,7 +487,7 @@ arm64_get_writable_addr(void *addr, void **out)
 	 * If it is within the DMAP region and is writable use that.
 	 */
 	if (PHYS_IN_DMAP_RANGE(pa)) {
-		addr = (void *)PHYS_TO_DMAP(pa);
+		addr = PHYS_TO_DMAP(pa);
 		if (PAR_SUCCESS(arm64_address_translate_s1e1w(
 		    (vm_offset_t)addr))) {
 			*out = addr;
@@ -507,7 +537,7 @@ efi_early_map(vm_offset_t va)
 	efi_map_foreach_entry(efihdr, efi_early_map_entry, &emd);
 	if (emd.pa == 0)
 		return NULL;
-	return (void *)PHYS_TO_DMAP(emd.pa);
+	return PHYS_TO_DMAP(emd.pa);
 }
 
 
@@ -525,7 +555,7 @@ exclude_efi_memreserve(vm_paddr_t efi_systbl_phys)
 	struct efi_systbl *systbl;
 	efi_guid_t efi_memreserve = LINUX_EFI_MEMRESERVE_TABLE;
 
-	systbl = (struct efi_systbl *)PHYS_TO_DMAP(efi_systbl_phys);
+	systbl = PHYS_TO_DMAP(efi_systbl_phys);
 	if (systbl == NULL) {
 		printf("can't map systbl\n");
 		return;
@@ -561,8 +591,7 @@ exclude_efi_memreserve(vm_paddr_t efi_systbl_phys)
 		 * after a SetVirtualAddressMap(). The list's mr_next pointer
 		 * is also a PA.
 		 */
-		mr = (struct linux_efi_memreserve *)PHYS_TO_DMAP(
-			(vm_offset_t)cfgtbl->ct_data);
+		mr = PHYS_TO_DMAP((vm_offset_t)cfgtbl->ct_data);
 		while (true) {
 			for (int j = 0; j < mr->mr_count; j++) {
 				struct linux_efi_memreserve_entry *mre;
@@ -573,7 +602,7 @@ exclude_efi_memreserve(vm_paddr_t efi_systbl_phys)
 			}
 			if (mr->mr_next == 0)
 				break;
-			mr = (struct linux_efi_memreserve *)PHYS_TO_DMAP(mr->mr_next);
+			mr = PHYS_TO_DMAP(mr->mr_next);
 		};
 	}
 
@@ -686,9 +715,6 @@ cache_setup(void)
 		/* Same as with above calculations */
 		dczva_line_shift = DCZID_BS_SIZE(dczid_el0);
 		dczva_line_size = sizeof(int) << dczva_line_shift;
-
-		/* Change pagezero function */
-		pagezero = pagezero_cache;
 	}
 }
 
@@ -774,6 +800,9 @@ initarm(struct arm64_bootparams *abp)
 
 	update_special_regs(0);
 
+	sched_instance_select();
+	link_elf_ireloc();
+
 	/* Set the pcpu data, this is needed by pmap_bootstrap */
 	pcpup = &pcpu0;
 	pcpu_init(pcpup, 0, sizeof(struct pcpu));
@@ -790,7 +819,6 @@ initarm(struct arm64_bootparams *abp)
 	PCPU_SET(curthread, &thread0);
 	PCPU_SET(midr, get_midr());
 
-	link_elf_ireloc();
 #ifdef FDT
 	try_load_dtb();
 #endif
@@ -863,6 +891,9 @@ initarm(struct arm64_bootparams *abp)
 	physmem_init_kernel_globals();
 
 	valid = bus_probe();
+
+	psci_init(NULL);
+	arm64_rsi_setup_memory();
 
 	cninit();
 	set_ttbr0(abp->kern_ttbr0);
@@ -1042,3 +1073,35 @@ DB_SHOW_COMMAND(vtop, db_show_vtop)
 		db_printf("show vtop <virt_addr>\n");
 }
 #endif
+
+#undef memset
+#undef memmove
+#undef memcpy
+
+void	*memset_std(void *buf, int c, size_t len);
+void	*memset_mops(void *buf, int c, size_t len);
+void    *memmove_std(void * _Nonnull dst, const void * _Nonnull src,
+	    size_t len);
+void    *memmove_mops(void * _Nonnull dst, const void * _Nonnull src,
+	    size_t len);
+void    *memcpy_std(void * _Nonnull dst, const void * _Nonnull src,
+	    size_t len);
+void    *memcpy_mops(void * _Nonnull dst, const void * _Nonnull src,
+	    size_t len);
+
+DEFINE_IFUNC(, void *, memset, (void *, int, size_t))
+{
+	return ((elf_hwcap2 & HWCAP2_MOPS) != 0 ? memset_mops : memset_std);
+}
+
+DEFINE_IFUNC(, void *, memmove, (void * _Nonnull, const void * _Nonnull,
+    size_t))
+{
+	return ((elf_hwcap2 & HWCAP2_MOPS) != 0 ? memmove_mops : memmove_std);
+}
+
+DEFINE_IFUNC(, void *, memcpy, (void * _Nonnull, const void * _Nonnull,
+    size_t))
+{
+	return ((elf_hwcap2 & HWCAP2_MOPS) != 0 ? memcpy_mops : memcpy_std);
+}

@@ -43,6 +43,7 @@ SUBDIR=	\
 	${_allwinner} \
 	${_armv8crypto} \
 	${_armv8_rng} \
+	${_apple_bce} \
 	${_asmc} \
 	ata \
 	${_aq} \
@@ -72,6 +73,7 @@ SUBDIR=	\
 	bridgestp \
 	bwi \
 	bwn \
+	${_adlngpio} \
 	${_bytgpio} \
 	${_chvgpio} \
 	cam \
@@ -86,6 +88,7 @@ SUBDIR=	\
 	${_cfi} \
 	${_chromebook_platform} \
 	${_ciss} \
+	${_coreboot} \
 	${_coretemp} \
 	${_cpsw} \
 	${_cpuctl} \
@@ -169,6 +172,7 @@ SUBDIR=	\
 	if_tuntap \
 	if_vlan \
 	if_vxlan \
+	if_geneve \
 	${_if_wg} \
 	iflib \
 	${_igc} \
@@ -214,7 +218,6 @@ SUBDIR=	\
 	khelp \
 	krpc \
 	ksyms \
-	le \
 	lge \
 	libalias \
 	libiconv \
@@ -296,6 +299,7 @@ SUBDIR=	\
 	nlsysevent \
 	nge \
 	nmdm \
+	ntsync \
 	nullfs \
 	${_ntb} \
 	nvd \
@@ -357,7 +361,7 @@ SUBDIR=	\
 	${_rtw89} \
 	rtwn \
 	rtwn_pci \
-	rtwn_usb \
+	${_rtwn_usb} \
 	${_rtwnfw} \
 	${_s3} \
 	${_safe} \
@@ -399,6 +403,7 @@ SUBDIR=	\
 	sysvipc \
 	tarfs \
 	tcp \
+	${_tglhgpio} \
 	${_thunderbolt} \
 	${_ti} \
 	tmpfs \
@@ -412,12 +417,13 @@ SUBDIR=	\
 	${_ufshci} \
 	uinput \
 	unionfs \
-	usb \
+	${_usb} \
 	${_vesa} \
 	${_vf_i2c} \
 	virtio \
 	vge \
 	${_viawd} \
+	video \
 	videomode \
 	vkbd \
 	${_vmd} \
@@ -542,6 +548,7 @@ SUBDIR+=	fdt
     ${MACHINE_CPUARCH} == "i386"
 SUBDIR+=	linprocfs
 SUBDIR+=	linsysfs
+SUBDIR+=	linux_ntsync
 .endif
 .if ${MACHINE_CPUARCH} == "amd64" || ${MACHINE_CPUARCH} == "i386"
 SUBDIR+=	linux
@@ -549,6 +556,17 @@ SUBDIR+=	linux
 .if ${MACHINE_CPUARCH} == "aarch64" || ${MACHINE_CPUARCH} == "amd64"
 SUBDIR+=	linux64
 SUBDIR+=	linux_common
+.endif
+
+# LinuxKPI based wireless drivers.
+.if ${MACHINE_CPUARCH} == "aarch64" || ${MACHINE_CPUARCH} == "amd64" || \
+    ${MACHINE_CPUARCH} == "i386" || ${MACHINE_CPUARCH} == "riscv"
+_iwlwifi=	iwlwifi
+_rtw88=		rtw88
+# rtw89 currently cannot be compiled without ACPI (seems also broken in Linux).
+.if ${KERN_OPTS:MDEV_ACPI}
+_rtw89=		rtw89
+.endif
 .endif
 
 .if ${MACHINE_CPUARCH} != "arm"
@@ -583,9 +601,6 @@ _acpi=		acpi
 _ena=		ena
 _gve=		gve
 _igc=		igc
-_iwlwifi=	iwlwifi
-_rtw88=		rtw88
-_rtw89=		rtw89
 _vmware=	vmware
 .endif
 
@@ -651,8 +666,7 @@ _rtwnfw=	rtwnfw
 .endif
 
 .if ${MK_SOURCELESS_UCODE} != "no" && ${MACHINE_CPUARCH} != "arm" && \
-	${MACHINE_ARCH} != "powerpc" && ${MACHINE_ARCH} != "powerpcspe" && \
-	${MACHINE_CPUARCH} != "riscv"
+	${MACHINE_ARCH} != "powerpc" && ${MACHINE_CPUARCH} != "riscv"
 _cxgbe=		cxgbe
 .endif
 
@@ -667,7 +681,7 @@ _genet=		genet
 .endif
 
 .if ${MACHINE_CPUARCH} == "amd64" || ${MACHINE_CPUARCH} == "aarch64" || \
-	${MACHINE_ARCH:Mpowerpc64*}
+	${MACHINE_ARCH:Mpowerpc64*} != ""
 _ice=		ice
 .if ${MK_SOURCELESS_UCODE} != "no"
 _ice_ddp=	ice_ddp
@@ -677,6 +691,7 @@ _ice_ddp=	ice_ddp
 _irdma=		irdma
 .endif
 .endif
+_ixl=		ixl
 .endif
 
 .if ${MACHINE_CPUARCH} == "aarch64"
@@ -693,7 +708,7 @@ _sdhci_fdt=	sdhci_fdt
 .endif
 
 # These rely on 64bit atomics
-.if ${MACHINE_ARCH} != "powerpc" && ${MACHINE_ARCH} != "powerpcspe"
+.if ${MACHINE_ARCH} != "powerpc"
 _mps=		mps
 _mpr=		mpr
 .endif
@@ -701,6 +716,14 @@ _mpr=		mpr
 .if ${MK_TESTS} != "no" || defined(ALL_MODULES)
 SUBDIR+=	ktest
 SUBDIR+=	tests
+.endif
+
+.if ${MK_USB} != "no" || defined(ALL_MODULES)
+_rtwn_usb=	rtwn_usb
+_usb=		usb
+. if ${MACHINE_CPUARCH} == "amd64"
+_thunderbolt=	thunderbolt
+. endif
 .endif
 
 .if ${MK_ZFS} != "no" || defined(ALL_MODULES)
@@ -777,6 +800,7 @@ _wdatwd=	wdatwd
 
 _aac=		aac
 _aacraid=	aacraid
+_adlngpio=	adlngpio
 .if ${MK_CRYPT} != "no" || defined(ALL_MODULES)
 _aesni=		aesni
 .endif
@@ -786,7 +810,6 @@ _amdsbwd=	amdsbwd
 _amdsmn=	amdsmn
 _amdtemp=	amdtemp
 _arcmsr=	arcmsr
-_asmc=		asmc
 .if ${MK_CRYPT} != "no" || defined(ALL_MODULES)
 _blake2=	blake2
 .endif
@@ -794,6 +817,7 @@ _bytgpio=	bytgpio
 _chvgpio=	chvgpio
 _ciss=		ciss
 _chromebook_platform=	chromebook_platform
+_coreboot=	coreboot
 _coretemp=	coretemp
 .if ${MK_SOURCELESS_HOST} != "no" && empty(KCSAN_ENABLED)
 _hpt27xx=	hpt27xx
@@ -823,6 +847,7 @@ _nfe=		nfe
 _nvram=		nvram
 .if ${MK_CRYPT} != "no" || defined(ALL_MODULES)
 _padlock=	padlock
+_padlock_rng=	padlock_rng
 _rdrand_rng=	rdrand_rng
 _rdseed_rng=	rdseed_rng
 .endif
@@ -830,6 +855,7 @@ _pchtherm = pchtherm
 _s3=		s3
 _sdhci_acpi=	sdhci_acpi
 _superio=	superio
+_tglhgpio=	tglhgpio
 _vesa=		vesa
 _viawd=		viawd
 _vmd=		vmd
@@ -845,6 +871,8 @@ _x86bios=	x86bios
 
 .if ${MACHINE_CPUARCH} == "amd64"
 _amdgpio=	amdgpio
+_apple_bce=	apple_bce
+_asmc=		asmc
 _ccp=		ccp
 _enic=		enic
 _iavf=		iavf
@@ -895,9 +923,6 @@ _glxsb=		glxsb
 _pcfclock=	pcfclock
 _pst=		pst
 _sbni=		sbni
-.if ${MK_CRYPT} != "no" || defined(ALL_MODULES)
-_padlock_rng=	padlock_rng
-.endif
 .endif
 
 .if ${MACHINE_ARCH} == "armv7"
@@ -918,12 +943,10 @@ _ffec=		ffec
 .endif
 
 .if ${MACHINE_ARCH:Mpowerpc64*} != ""
-_ixl=		ixl
 _nvram=		opal_nvram
 .endif
 
-.if ${MACHINE_CPUARCH} == "powerpc" && ${MACHINE_ARCH} != "powerpcspe"
-# Don't build powermac_nvram for powerpcspe, it's never supported.
+.if ${MACHINE_CPUARCH} == "powerpc"
 _nvram+=	powermac_nvram
 .endif
 
@@ -931,10 +954,6 @@ _nvram+=	powermac_nvram
 _bcm283x_clkman=  bcm283x_clkman
 _bcm283x_pwm=	bcm283x_pwm
 _neta=		neta
-.endif
-
-.if ${MACHINE_CPUARCH} == "amd64"
-_thunderbolt=	thunderbolt
 .endif
 
 .if !(${COMPILER_TYPE} == "clang" && ${COMPILER_VERSION} < 110000)
@@ -961,7 +980,7 @@ SUBDIR:= ${SUBDIR:N${reject}}
 afterinstall: .PHONY
 	${KLDXREF_CMD} ${DESTDIR}${KMODDIR}
 .if defined(NO_ROOT) && defined(METALOG)
-	echo ".${DISTBASE}${KMODDIR}/linker.hints type=file mode=0644 uname=root gname=wheel" | \
+	echo ".${DISTBASE}${KMODDIR}/linker.hints type=file uname=root gname=wheel mode=0644" | \
 	    cat -l >> ${METALOG}
 .endif
 .endif

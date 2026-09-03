@@ -276,7 +276,7 @@ void
 initializecpu(void)
 {
 	uint64_t msr;
-	uint32_t cr4;
+	uint64_t cr4;
 
 	TSENTER();
 	cr4 = rcr4();
@@ -289,6 +289,19 @@ initializecpu(void)
 
 	if (cpu_stdext_feature2 & CPUID_STDEXT2_PKU)
 		cr4 |= CR4_PKE;
+
+	/*
+	 * Any CPU having Linear Address Space Separation (LASS)
+	 * should have SMAP, but check it to be sure.  Otherwise
+	 * userspace accesses from kernel cannot work.
+	 */
+	if (IS_BSP() && (cpu_stdext_feature4 & CPUID_STDEXT4_LASS) != 0 &&
+	    (cpu_stdext_feature & CPUID_STDEXT_SMAP) != 0) {
+		lass_enabled = 1;
+		TUNABLE_INT_FETCH("hw.lass", &lass_enabled);
+	}
+	if (lass_enabled)
+		cr4 |= CR4_LASS;
 
 	/*
 	 * If SMEP is present, we only need to flush RSB (by default)
@@ -383,4 +396,47 @@ initializecpucache(void)
 		cpu_feature &= ~CPUID_CLFSH;
 		cpu_stdext_feature &= ~CPUID_STDEXT_CLFLUSHOPT;
 	}
+}
+
+extern const char fred_events_handlers[], fred_events_handlers_end[];
+
+void
+amd64_cpu_init_fred(void)
+{
+	MPASS((((uintptr_t)fred_events_handlers) & PAGE_MASK) == 0);
+	/*
+	 * 128b = 0x2 * 64b redzone
+	 * SLC 0 for EXTINT
+	 * SLC 0 current
+	 */
+	wrmsr(MSR_FRED_CONFIG, (uintptr_t)fred_events_handlers |
+	    (0x2 << IA32_FRED_CONFIG_REDZONESZ_SHIFT) |
+	    (0 << IA32_FRED_CONFIG_EXTINT_SLC_SHIFT) | 0);
+
+	/*
+	 * With FRED, there is no need for workarounds requiring
+	 * dedicated stack for #DB.  Also, there is no need to have
+	 * separate stacks for #NM and #MC, because CSL rules ensure
+	 * that interrupted frame is safe even if NMI was interrupted
+	 * by machine check or vice versa.
+	 *
+	 * Still, we need to provide a stack for events that can occur
+	 * with the interrupts disabled, to avoid caring about the
+	 * ordering of the context update in cpu_switch.S.  Use CSL 1
+	 * for #NM and #MC.
+	 *
+	 * Since double fault handler is used to handle stack
+	 * overflow, it gets the dedicated stack, of the highest used
+	 * CSL 2.
+	 *
+	 * CSL 3 is unused, and we have some space to re-arrange this
+	 * if a need in the future appears.
+	 */
+	wrmsr(MSR_FRED_STKLVLS, (1ul << (IDT_NM * 2)) |
+	    (1ul << (IDT_MC * 2)) | (2ul << (IDT_DF * 2)));
+	wrmsr(MSR_FRED_RSP3, 0);
+	load_cr4(rcr4() | CR4_FRED);
+	if (IS_BSP() && bootverbose)
+		printf("FRED enabled\n");
+
 }

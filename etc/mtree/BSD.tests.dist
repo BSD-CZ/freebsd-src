@@ -31,6 +31,8 @@
         ..
         echo
         ..
+        ed
+        ..
         expr
         ..
         hostname
@@ -48,6 +50,8 @@
         pkill
         ..
         pwait
+        ..
+        pwd
         ..
         rm
         ..
@@ -80,8 +84,8 @@
     ..
     cddl
         lib
-            libtpool
-            ..
+        ..
+        oclo
         ..
         sbin
         ..
@@ -288,14 +292,6 @@
     ..
     games
     ..
-    gnu
-        lib
-        ..
-        usr.bin
-            diff
-            ..
-        ..
-    ..
     include
     ..
     lib
@@ -459,6 +455,8 @@
         ..
         libutil
         ..
+        libutil++
+        ..
         libxo
         ..
         msun
@@ -475,6 +473,8 @@
         ..
         nuageinit
         ..
+        pkg-serve
+        ..
         rc
         ..
         rtld-elf
@@ -490,6 +490,8 @@
         devd
         ..
         dhclient
+        ..
+        fsck_msdosfs
         ..
         growfs
         ..
@@ -518,6 +520,8 @@
         swapon
         ..
         sysctl
+        ..
+        tunefs
         ..
     ..
     secure
@@ -552,6 +556,8 @@
         acl
         ..
         aio
+        ..
+        arch
         ..
         audit
         ..
@@ -822,6 +828,8 @@
         fs
             fusefs
             ..
+            pjdfstest
+            ..
             tarfs
             ..
             tmpfs
@@ -882,6 +890,8 @@
         mac
             bsdextended
             ..
+            do
+            ..
             ipacl
             ..
             portacl
@@ -897,6 +907,8 @@
                 ..
             ..
             routing
+            ..
+            wg
             ..
         ..
         netgraph
@@ -962,6 +974,8 @@
             ..
             utimensat
             ..
+        ..
+        pmc
         ..
         posixshm
         ..
@@ -1239,6 +1253,8 @@
         ..
         truncate
         ..
+        truss
+        ..
         tsort
         ..
         unifdef
@@ -1262,6 +1278,8 @@
         yacc
             yacc
             ..
+        ..
+        yes
         ..
     ..
     usr.sbin

@@ -241,6 +241,12 @@ void MockFS::debug_request(const mockfs_buf_in &in, ssize_t buflen)
 		case FUSE_INTERRUPT:
 			printf(" unique=%" PRIu64, in.body.interrupt.unique);
 			break;
+		case FUSE_IOCTL:
+			printf(" flags=%#x cmd=%#x in_size=%" PRIu32
+				" out_size=%" PRIu32,
+				in.body.ioctl.flags, in.body.ioctl.cmd,
+				in.body.ioctl.in_size, in.body.ioctl.out_size);
+			break;
 		case FUSE_LINK:
 			printf(" oldnodeid=%" PRIu64, in.body.link.oldnodeid);
 			break;
@@ -294,7 +300,7 @@ void MockFS::debug_request(const mockfs_buf_in &in, ssize_t buflen)
 				in.body.read.offset,
 				in.body.read.size);
 			if (verbosity > 1)
-				printf(" flags=%#x", in.body.read.flags);
+				printf(" fh=%#" PRIx64 " flags=%#x", in.body.read.fh, in.body.read.flags);
 			break;
 		case FUSE_READDIR:
 			printf(" fh=%#" PRIx64 " offset=%" PRIu64 " size=%u",
@@ -420,7 +426,8 @@ MockFS::MockFS(int max_read, int max_readahead, bool allow_other,
 	bool push_symlinks_in, bool ro, enum poll_method pm, uint32_t flags,
 	uint32_t kernel_minor_version, uint32_t max_write, bool async,
 	bool noclusterr, unsigned time_gran, bool nointr, bool noatime,
-	const char *fsname, const char *subtype, bool no_auto_init)
+	const char *fsname, const char *subtype, bool no_auto_init,
+	bool auto_unmount)
 	: m_daemon_id(NULL),
 	  m_kernel_minor_version(kernel_minor_version),
 	  m_kq(pm == KQ ? kqueue() : -1),
@@ -513,6 +520,10 @@ MockFS::MockFS(int max_read, int max_readahead, bool allow_other,
 		build_iovec(&iov, &iovlen, "intr",
 			__DECONST(void*, &trueval), sizeof(bool));
 	}
+	if (auto_unmount) {
+		build_iovec(&iov, &iovlen, "auto_unmount",
+			__DECONST(void*, &trueval), sizeof(bool));
+	}
 	if (*fsname) {
 		build_iovec(&iov, &iovlen, "fsname=",
 			__DECONST(void*, fsname), -1);
@@ -539,9 +550,8 @@ MockFS::MockFS(int max_read, int max_readahead, bool allow_other,
 	if (0 != sigaction(SIGUSR1, &sa, NULL))
 		throw(std::system_error(errno, std::system_category(),
 			"Couldn't handle SIGUSR1"));
-	if (pthread_create(&m_daemon_id, NULL, service, (void*)this))
-		throw(std::system_error(errno, std::system_category(),
-			"Couldn't Couldn't start fuse thread"));
+	if (!no_auto_init)
+		start_service();
 }
 
 MockFS::~MockFS() {
@@ -678,6 +688,12 @@ void MockFS::audit_request(const mockfs_buf_in &in, ssize_t buflen) {
 		EXPECT_EQ(inlen, fih + sizeof(in.body.init));
 		EXPECT_EQ((size_t)buflen, inlen);
 		break;
+	case FUSE_IOCTL:
+		EXPECT_GE(inlen, fih + sizeof(in.body.ioctl));
+		EXPECT_EQ(inlen,
+			fih + sizeof(in.body.ioctl) + in.body.ioctl.in_size);
+		EXPECT_EQ((size_t)buflen, inlen);
+		break;
 	case FUSE_OPENDIR:
 		EXPECT_EQ(inlen, fih + sizeof(in.body.opendir));
 		EXPECT_EQ((size_t)buflen, inlen);
@@ -733,7 +749,6 @@ void MockFS::audit_request(const mockfs_buf_in &in, ssize_t buflen) {
 		break;
 	case FUSE_NOTIFY_REPLY:
 	case FUSE_BATCH_FORGET:
-	case FUSE_IOCTL:
 	case FUSE_POLL:
 	case FUSE_READDIRPLUS:
 		FAIL() << "Unsupported opcode?";
@@ -774,6 +789,11 @@ void MockFS::init(uint32_t flags) {
 	}
 
 	write(m_fuse_fd, out.get(), out->header.len);
+}
+
+int MockFS::dup_dev_fuse()
+{
+	return (dup(m_fuse_fd));
 }
 
 void MockFS::kill_daemon() {
@@ -997,6 +1017,12 @@ void MockFS::read_request(mockfs_buf_in &in, ssize_t &res) {
 	ASSERT_TRUE(res == static_cast<ssize_t>(in.header.len) || m_quit);
 }
 
+void MockFS::start_service() {
+	if (pthread_create(&m_daemon_id, NULL, service, (void*)this))
+		throw(std::system_error(errno, std::system_category(),
+			"Couldn't start fuse thread"));
+}
+
 void MockFS::write_response(const mockfs_buf_out &out) {
 	fd_set writefds;
 	pollfd fds[1];
@@ -1045,6 +1071,8 @@ void MockFS::write_response(const mockfs_buf_out &out) {
 	if (out.expected_errno) {
 		ASSERT_EQ(-1, r);
 		ASSERT_EQ(out.expected_errno, errno) << strerror(errno);
+	} else if (m_quit && errno == EBADF) {
+		/* Daemon is in the process of shutting down */
 	} else {
 		if (r <= 0 && errno == EINVAL) {
 			printf("Failed to write response.  unique=%" PRIu64

@@ -461,6 +461,9 @@ extern long first_page;			/* first physical page number */
  */
 vm_page_t PHYS_TO_VM_PAGE(vm_paddr_t pa);
 
+#define	DMAP_TO_VM_PAGE(va)	PHYS_TO_VM_PAGE(DMAP_TO_PHYS(va))
+#define	VM_PAGE_TO_DMAP(entry)	PHYS_TO_DMAP(VM_PAGE_TO_PHYS(entry))
+
 /*
  * vm_page allocation arguments for the functions vm_page_alloc(),
  * vm_page_alloc_contig(), vm_page_alloc_noobj(), vm_page_grab(), and
@@ -487,6 +490,7 @@ vm_page_t PHYS_TO_VM_PAGE(vm_paddr_t pa);
 #define VM_ALLOC_INTERRUPT	1
 #define VM_ALLOC_SYSTEM		2
 #define	VM_ALLOC_CLASS_MASK	3
+#define	VM_ALLOC_AVAIL0		0x0004
 #define	VM_ALLOC_WAITOK		0x0008	/* (gnp) Sleep and retry */
 #define	VM_ALLOC_WAITFAIL	0x0010	/* (acgnp) Sleep and return error */
 #define	VM_ALLOC_WIRED		0x0020	/* (acgnp) Allocate a wired page */
@@ -771,6 +775,18 @@ vm_page_astate_load(vm_page_t m)
 }
 
 /*
+ *	Load a snapshot of a page's 32-bit atomic state, with acquire semantics.
+ */
+static inline vm_page_astate_t
+vm_page_astate_load_acq(vm_page_t m)
+{
+	vm_page_astate_t a;
+
+	a._bits = atomic_load_acq_32(&m->a._bits);
+	return (a);
+}
+
+/*
  *	Atomically compare and set a page's atomic state.
  */
 static inline bool
@@ -785,6 +801,26 @@ vm_page_astate_fcmpset(vm_page_t m, vm_page_astate_t *old, vm_page_astate_t new)
 	    ("%s: bits are unchanged", __func__));
 
 	return (atomic_fcmpset_32(&m->a._bits, &old->_bits, new._bits) != 0);
+}
+
+/*
+ *	Atomically compare and set a page's atomic state, with release
+ *	semantics.
+ */
+static inline bool
+vm_page_astate_fcmpset_rel(vm_page_t m, vm_page_astate_t *old,
+    vm_page_astate_t new)
+{
+
+	KASSERT(new.queue == PQ_INACTIVE || (new.flags & PGA_REQUEUE_HEAD) == 0,
+	    ("%s: invalid head requeue request for page %p", __func__, m));
+	KASSERT((new.flags & PGA_ENQUEUED) == 0 || new.queue != PQ_NONE,
+	    ("%s: setting PGA_ENQUEUED with PQ_NONE in page %p", __func__, m));
+	KASSERT(new._bits != old->_bits,
+	    ("%s: bits are unchanged", __func__));
+
+	return (atomic_fcmpset_rel_32(&m->a._bits, &old->_bits, new._bits) !=
+	    0);
 }
 
 /*

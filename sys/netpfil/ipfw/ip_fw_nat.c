@@ -291,7 +291,7 @@ free_nat_instance(struct cfg_nat *ptr)
 static int
 ipfw_nat(struct ip_fw_args *args, struct cfg_nat *t, struct mbuf *m)
 {
-	struct mbuf *mcl;
+	struct mbuf *mcl, *mfree __diagused;
 	struct ip *ip;
 	/* XXX - libalias duct tape */
 	int ldt, retval, found;
@@ -311,17 +311,17 @@ ipfw_nat(struct ip_fw_args *args, struct cfg_nat *t, struct mbuf *m)
 	/*
 	 * XXX - Libalias checksum offload 'duct tape':
 	 *
-	 * locally generated packets have only pseudo-header checksum
-	 * calculated and libalias will break it[1], so mark them for
-	 * later fix.  Moreover there are cases when libalias modifies
+	 * When checksum offloading is used, packets contain only the
+	 * pseudo-header checksum and libalias will break it[1], so mark them
+	 * for later fix.  Moreover there are cases when libalias modifies
 	 * tcp packet data[2], mark them for later fix too.
 	 *
 	 * [1] libalias was never meant to run in kernel, so it does
 	 * not have any knowledge about checksum offloading, and
 	 * expects a packet with a full internet checksum.
-	 * Unfortunately, packets generated locally will have just the
-	 * pseudo header calculated, and when libalias tries to adjust
-	 * the checksum it will actually compute a wrong value.
+	 * Unfortunately, when checksum offloading is used, packets will
+	 * contain just the pseudo-header checksum, and when libalias tries to
+	 * adjust the checksum it will actually compute a wrong value.
 	 *
 	 * [2] when libalias modifies tcp's data content, full TCP
 	 * checksum has to be recomputed: the problem is that
@@ -340,8 +340,7 @@ ipfw_nat(struct ip_fw_args *args, struct cfg_nat *t, struct mbuf *m)
 	 * it can handle delayed checksum and tso)
 	 */
 
-	if (mcl->m_pkthdr.rcvif == NULL &&
-	    mcl->m_pkthdr.csum_flags & CSUM_DELAY_DATA)
+	if (mcl->m_pkthdr.csum_flags & CSUM_DELAY_DATA)
 		ldt = 1;
 
 	c = mtod(mcl, char *);
@@ -397,7 +396,8 @@ ipfw_nat(struct ip_fw_args *args, struct cfg_nat *t, struct mbuf *m)
 	    (retval == PKT_ALIAS_IGNORED &&
 	    (t->mode & PKT_ALIAS_DENY_INCOMING) != 0)))) {
 		/* XXX - should i add some logging? */
-		m_free(mcl);
+		mfree = m_free(mcl);
+		MPASS(mfree == NULL);
 		args->m = NULL;
 		return (IP_FW_DENY);
 	}
@@ -503,7 +503,6 @@ nat44_config(struct ip_fw_chain *chain, struct nat44_cfg_nat *ucfg)
 	gencnt = chain->gencnt;
 	ptr = lookup_nat_name(&chain->nat, ucfg->name);
 	if (ptr == NULL) {
-		IPFW_UH_WUNLOCK(chain);
 		/* New rule: allocate and init new instance. */
 		ptr = malloc(sizeof(struct cfg_nat), M_IPFW, M_WAITOK | M_ZERO);
 		ptr->lib = LibAliasInit(NULL);
@@ -514,7 +513,6 @@ nat44_config(struct ip_fw_chain *chain, struct nat44_cfg_nat *ucfg)
 		LIST_REMOVE(ptr, _next);
 		flush_nat_ptrs(chain, ptr->id);
 		IPFW_WUNLOCK(chain);
-		IPFW_UH_WUNLOCK(chain);
 	}
 
 	/*
@@ -543,7 +541,6 @@ nat44_config(struct ip_fw_chain *chain, struct nat44_cfg_nat *ucfg)
 	del_redir_spool_cfg(ptr, &ptr->redir_chain);
 	/* Add new entries. */
 	add_redir_spool_cfg((char *)(ucfg + 1), ptr);
-	IPFW_UH_WLOCK(chain);
 
 	/* Extra check to avoid race with another ipfw_nat_cfg() */
 	tcfg = NULL;
@@ -1049,7 +1046,6 @@ retry:
 				len += sizeof(struct cfg_spool_legacy);
 		}
 	}
-	IPFW_UH_RUNLOCK(chain);
 
 	data = malloc(len, M_TEMP, M_WAITOK | M_ZERO);
 	bcopy(&nat_cnt, data, sizeof(nat_cnt));
@@ -1057,7 +1053,6 @@ retry:
 	nat_cnt = 0;
 	len = sizeof(nat_cnt);
 
-	IPFW_UH_RLOCK(chain);
 	if (gencnt != chain->gencnt) {
 		free(data, M_TEMP);
 		goto retry;

@@ -256,7 +256,7 @@ nl_send(struct nl_writer *nw, struct nlpcb *nlp)
 	}
 }
 
-static int
+static __noinline int
 nl_receive_message(struct nlmsghdr *hdr, int remaining_length,
     struct nlpcb *nlp, struct nl_pstate *npt)
 {
@@ -345,9 +345,11 @@ nl_process_nbuf(struct nl_buf *nb, struct nlpcb *nlp)
 	};
 
 	for (; nb->offset + sizeof(struct nlmsghdr) <= nb->datalen;) {
+		u_int msglen;
+
 		hdr = (struct nlmsghdr *)&nb->data[nb->offset];
 		/* Save length prior to calling handler */
-		int msglen = NLMSG_ALIGN(hdr->nlmsg_len);
+		msglen = NLMSG_ALIGN(hdr->nlmsg_len);
 		NL_LOG(LOG_DEBUG3, "parsing offset %d/%d",
 		    nb->offset, nb->datalen);
 		npt_clear(&npt);

@@ -459,6 +459,12 @@ typedef struct usb_interface_assoc_descriptor usb_interface_assoc_descriptor_t;
 #define	UICLASS_PHYSICAL	0x05
 #define	UICLASS_IMAGE		0x06
 #define	UISUBCLASS_SIC		1	/* still image class */
+
+#define	UICLASS_VIDEO		0x0e	/* video */
+#define	UISUBCLASS_VIDEOCONTROL		1
+#define	UISUBCLASS_VIDEOSTREAMING	2
+#define	UISUBCLASS_VIDEO_IFACE_COLL	3
+
 #define	UICLASS_PRINTER		0x07
 #define	UISUBCLASS_PRINTER	1
 #define	UIPROTO_PRINTER_UNI	1
@@ -541,7 +547,7 @@ struct usb_endpoint_descriptor {
 #define	UE_XFERTYPE	0x03
 #define	UE_CONTROL	0x00
 #define	UE_ISOCHRONOUS	0x01
-#define	UE_BULK	0x02
+#define	UE_BULK		0x02
 #define	UE_INTERRUPT	0x03
 #define	UE_BULK_INTR	0xfe		/* for internal use only! */
 #define	UE_TYPE_ANY	0xff		/* for internal use only! */

@@ -80,7 +80,7 @@ struct arm_spe_softc {
 	int64_t                sc_pmsidr;
 	int                     kqueue_fd;
 	struct thread           *hwt_td;
-	struct arm_spe_info     *spe_info;
+	struct arm_spe_info     **spe_info;
 	struct hwt_context      *ctx;
 	STAILQ_HEAD(, arm_spe_queue) pending;
 	uint64_t                npending;
@@ -105,11 +105,13 @@ struct arm_spe_info {
 	struct mtx              lock;
 	struct arm_spe_softc    *sc;
 	struct task             task[2];
+	struct task             flush_task;
 	bool                    enabled : 1;
+	bool                    stopped : 1;
 
 	/* buffer is split in half as a ping-pong buffer */
 	vm_object_t             bufobj;
-	vm_offset_t             kvaddr;
+	char			*kvaddr;
 	size_t                  buf_size;
 	uint8_t                 buf_idx : 1; /* 0 = first half of buf, 1 = 2nd half */
 	struct arm_spe_buf_info buf_info[2];
@@ -139,24 +141,25 @@ struct arm_spe_queue {
 
 static inline vm_offset_t buf_start_addr(u_int buf_idx, struct arm_spe_info *info)
 {
-	vm_offset_t addr;
+	char *addr;
 	if (buf_idx == 0)
 		addr = info->kvaddr;
 	if (buf_idx == 1)
-	addr = info->kvaddr + (info->buf_size/2);
+		addr = info->kvaddr + (info->buf_size/2);
 
-	return (addr);
+	return ((vm_offset_t)addr);
 }
 
 static inline vm_offset_t buf_end_addr(u_int buf_idx, struct arm_spe_info *info)
 {
-	vm_offset_t addr;
+	char *addr;
+
 	if (buf_idx == 0)
 		addr = info->kvaddr + (info->buf_size/2);
 	if (buf_idx == 1)
 		addr = info->kvaddr + info->buf_size;
 
-	return (addr);
+	return ((vm_offset_t)addr);
 }
 
 #endif /* _ARM64_ARM_SPE_DEV_H_ */
