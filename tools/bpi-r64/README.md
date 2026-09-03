@@ -16,12 +16,20 @@ use for `sdmmc`:
 
 | Offset            | Content                                   |
 |-------------------|-------------------------------------------|
-| LBA 0-33          | protective MBR + GPT                      |
+| LBA 0             | MBR: protective 0xEE entry + bootable 0xEF entry for BL2 |
+| LBA 1-33          | GPT                                       |
 | LBA 1024 (512 KiB)| `bl2.img` (raw, no partition)             |
 | LBA 2048 (1 MiB)  | p1 `fip`: `fip.bin` (BL31 + U-Boot)       |
 | LBA 6144 (3 MiB)  | p2 `ubootenv`: U-Boot environment         |
 | LBA 8192 (4 MiB)  | p3 `efi`: FAT16 ESP, loader + `dtb/`      |
 | next MiB          | p4 `rootfs`: UFS2, grown on first boot    |
+
+The MT7622 BootROM does not read BL2 from a fixed SD offset: it looks for
+a bootable MBR partition entry (frank-w writes `r64_header_sdmmc.bin`,
+OpenWrt uses `ptgen -H`) and loads BL2 from where that entry points.
+`mkimage.sh` adds the entry (type 0xEF, LBA 1024, 1024 sectors) next to
+the protective 0xEE entry sgdisk creates; without it the board stops at
+`System halt!` before BL2 prints anything.
 
 ## Manual build on Linux (Debian/Ubuntu)
 

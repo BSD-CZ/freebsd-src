@@ -11,8 +11,14 @@
 # SD card layout (512-byte sectors), matching what frank-w's mtk-atf
 # build.sh createimg and OpenWrt use for MT7622 sdmmc boot:
 #
-#   LBA    0..  33  protective MBR + GPT header + entries
-#   LBA 1024        bl2.img  (raw, read by the BootROM at 512 KiB)
+#   LBA    0        MBR: protective GPT entry (0xEE) plus a bootable
+#                   (0x80) entry of type 0xEF covering LBA 1024..2047.
+#                   The MT7622 BootROM locates BL2 on SD cards through
+#                   this MBR entry (frank-w's r64_header_sdmmc.bin,
+#                   OpenWrt's ptgen -H); a plain protective MBR ends in
+#                   "System halt!" without ever loading BL2.
+#   LBA    1..  33  GPT header + entries
+#   LBA 1024        bl2.img  (raw, 512 KiB, DEVICE_HEADER_OFFSET=0x80000)
 #   LBA 2048..6143  p1 "fip"       fip.bin (BL31 + U-Boot), 2 MiB
 #   LBA 6144..7167  p2 "ubootenv"  U-Boot environment (0x300000), 512 KiB
 #   LBA 8192..      p3 "efi"       FAT16 ESP: EFI/BOOT/BOOTAA64.EFI + dtb/
@@ -170,6 +176,22 @@ sgdisk -o -a 2048 \
     -n 3:${ESP_START}:$(( ESP_START + ESP_SECT - 1 )) -c 3:efi -t 3:EF00 \
     -n 4:${ROOT_START}:$(( ROOT_START + ROOT_SECT - 1 )) -c 4:rootfs -t 4:A503 \
     "${OUT}" >/dev/null
+
+# MBR entry 2 (offset 0x1ce): bootable, type 0xEF, LBA ${BL2_SECT},
+# ${FIP_SECT}-${BL2_SECT} sectors; sgdisk only wrote the protective 0xEE
+# entry 1.  The BootROM needs this entry to find bl2.img.  Only octal
+# escapes are portable in printf(1), hence the byte-by-byte dance.
+le32() {
+	for _b in $(( $1 & 0xff )) $(( ($1 >> 8) & 0xff )) \
+	    $(( ($1 >> 16) & 0xff )) $(( ($1 >> 24) & 0xff )); do
+		printf "\\$(printf %03o "${_b}")"
+	done
+}
+{
+	printf '\200\000\000\000\357\000\000\000'	# boot flag, CHS, 0xEF, CHS
+	le32 ${BL2_SECT}
+	le32 $(( FIP_SECT - BL2_SECT ))
+} | dd of="${OUT}" bs=1 seek=$(( 0x1ce )) conv=notrunc status=none
 
 echo ">>> writing firmware and filesystems"
 dd if="${BL2}" of="${OUT}" bs=512 seek=${BL2_SECT} conv=notrunc status=none
