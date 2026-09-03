@@ -143,11 +143,16 @@ def bootstrap_bmake(source_root, objdir_prefix):
     env = os.environ.copy()
     global new_env_vars
     env.update(new_env_vars)
+    # bmake's install target honours $DESTDIR, so an inherited value (e.g. one
+    # exported for a later installworld) would redirect the bootstrap install
+    # away from bmake_install_dir and the freshly built bmake would never be
+    # found.  The bootstrap always installs into the objdir prefix.
+    env.pop("DESTDIR", None)
 
     run(["sh", bmake_source_dir / "boot-strap"] + configure_args,
         cwd=str(bmake_build_dir), env=env)
     run(["sh", bmake_source_dir / "boot-strap", "op=install"] + configure_args,
-        cwd=str(bmake_build_dir))
+        cwd=str(bmake_build_dir), env=env)
     bmake_config.write_text(configure_args_str)
 
     print("Finished bootstrapping bmake...")
