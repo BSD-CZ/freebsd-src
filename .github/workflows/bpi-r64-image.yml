@@ -13,7 +13,7 @@ name: BPI-R64 SD image
 
 on:
   push:
-    branches: [ max-support-mediatek-7622-bananapir64 ]
+    branches: [ main ]
     paths-ignore:
       - '**.md'
       - 'share/man/**'
