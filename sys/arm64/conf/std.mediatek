@@ -1,0 +1,62 @@
+options 	SOC_MEDIATEK
+
+device		uart_ns8250
+
+# GPIO / PINCTRL
+device		gpio
+device		gpiobacklight
+device		gpioled
+device		gpioregulator
+device		gpiokeys
+
+# Ethernet, BPF and bridge support
+device      if_mtge		# Enable support mt7622 eth
+device      bpf
+device      if_bridge
+
+# Ethernet switch
+device		etherswitch     # Enable etherswitch support
+device		mtkswitch       # Enable mediatek switch
+device 		mtkswitch_7531	# Enable mediatek mt7531 switch
+device 		miibus
+device 		mdio
+
+# wifi support
+device		wlan			# 802.11 support
+device		wlan_wep		# 802.11 WEP support
+device		wlan_tkip		# 802.11 TKIP support
+device		wlan_ccmp		# 802.11 CCMP support
+device		wlan_gcmp		# 802.11 GCMP support
+device		wlan_amrr		# AMRR transmit rate control algorithm
+
+# MMC/SD/SDIO Card slot support
+device		sdhci		# SD controller
+device		mmc		# mmc/sd bus
+device		mmcsd		# mmc/sd flash cards
+
+# USB support
+options 	USB_DEBUG		# enable debug msgs
+device		ohci			# OHCI USB interface
+device		uhci			# UHCI USB interface
+device		ehci			# EHCI USB interface (USB 2.0)
+device		xhci			# XHCI USB interface (USB 3.0)
+device		usb			    # USB Bus (required)
+device		usbhid			# USB HID Transport
+device		hkbd			# Keyboard
+device		ukbd			# Keyboard
+device		umass			# Disks/Mass storage - Requires scbus and da
+
+# netisr(9) worker threads.  CTLFLAG_RDTUN, so netisr reads them once when it
+# creates its workstreams and sysctl(8) cannot touch them afterwards.  They
+# normally come from /boot/loader.conf, which a board that TFTPs its kernel
+# straight from U-Boot never reads -- there is no loader(8) in that path.
+#
+# One worker per CPU.  Costs nothing while net.isr.dispatch is "direct", which
+# is the default and stays settable at runtime (that one is RWTUN): the extra
+# workers idle.  What it buys is that "deferred" can spread forwarded traffic
+# over both cores at all.
+envvar		net.isr.maxthreads="2"
+
+options         FDT
+# DTBs
+makeoptions     MODULES_EXTRA+="dtb/mediatek"
