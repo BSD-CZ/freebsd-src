@@ -1,0 +1,42 @@
+#
+# Default U-Boot environment for the FreeBSD BPI-R64 SD image built by
+# tools/bpi-r64/mkimage.sh.  build-firmware.sh compiles this into
+# u-boot.bin in place of frank-w's Linux boot menu (uEnv_r64.txt), which
+# looks for a uImage under bananapi/bpi-r64/linux and finds nothing on a
+# FreeBSD card.
+#
+# frank-w's mt7622_bpi-r64_defconfig sets CONFIG_ENV_IS_NOWHERE=y: there
+# is no saved environment and "saveenv" cannot store one, so the built-in
+# environment is what the board boots with.  Press a key within
+# ${bootdelay} seconds for the BPI-R64> prompt.
+#
+board=bpi-r64
+
+loadaddr=0x44000000
+fdtaddr=0x47000000
+
+#
+# mkimage.sh layout: GPT partition 3 is the FAT16 ESP carrying the FreeBSD
+# EFI loader and dtb/; partition 4 is the UFS root the loader boots from.
+#
+esppart=3
+efifile=EFI/BOOT/BOOTAA64.EFI
+fdtfile=dtb/mediatek/mt7622-bananapi-bpi-r64.dtb
+
+#
+# mmc 1 is the SD card, mmc 0 the eMMC.  Prefer the SD card, which is what
+# the BootROM read BL2 from with the boot switch in the SD position.
+#
+selectmmc=if mmc dev 1; then setenv devnum 1; echo Booting from SD; else mmc dev 0; setenv devnum 0; echo Booting from eMMC; fi
+
+loadefi=load mmc ${devnum}:${esppart} ${loadaddr} ${efifile}
+loadfdt=load mmc ${devnum}:${esppart} ${fdtaddr} ${fdtfile}
+
+#
+# Hand the loader FreeBSD's own DTB when the ESP carries one, otherwise
+# the device tree U-Boot itself was built with.
+#
+bootfreebsd=if run loadefi; then if run loadfdt; then bootefi ${loadaddr} ${fdtaddr}; else echo No ${fdtfile}, using the U-Boot FDT; bootefi ${loadaddr} ${fdtcontroladdr}; fi; else echo No ${efifile} on mmc ${devnum}:${esppart}; fi
+
+bootdelay=2
+bootcmd=run selectmmc; run bootfreebsd

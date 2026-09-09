@@ -15,11 +15,17 @@
 #
 # Usage: build-firmware.sh [-o outdir] [-w workdir] [-d sdmmc|emmc]
 #
-# Environment overrides: UBOOT_REPO UBOOT_BRANCH UBOOT_DEFCONFIG
+# Environment overrides: UBOOT_REPO UBOOT_BRANCH UBOOT_DEFCONFIG UBOOT_ENV_FILE
 #                        ATF_REPO ATF_BRANCH CROSS_COMPILE ATF_EXTRA_FLAGS
+#
+# UBOOT_ENV_FILE is the default U-Boot environment compiled into u-boot.bin
+# (uEnv_freebsd.txt next to this script by default, which boots the FreeBSD
+# loader off the image's ESP).  Set it empty to keep frank-w's Linux one.
 #
 
 set -eu
+
+SCRIPTDIR=$(cd "$(dirname "$0")" && pwd)
 
 OUTDIR=${OUTDIR:-$(pwd)/firmware}
 WORKDIR=${WORKDIR:-$(pwd)/firmware-src}
@@ -40,6 +46,8 @@ UBOOT_DEFCONFIG=${UBOOT_DEFCONFIG:-mt7622_bpi-r64_defconfig}
 ATF_REPO=${ATF_REPO:-https://github.com/frank-w/u-boot.git}
 ATF_BRANCH=${ATF_BRANCH:-mtk-atf}
 ATF_PLAT=mt7622
+# Unset (not just empty) means "use ours"; UBOOT_ENV_FILE= keeps the stock one.
+UBOOT_ENV_FILE=${UBOOT_ENV_FILE-${SCRIPTDIR}/uEnv_freebsd.txt}
 # DDR3_FLYBY=1 is what frank-w's build.sh uses for the BPI-R64.
 ATF_EXTRA_FLAGS=${ATF_EXTRA_FLAGS:-DDR3_FLYBY=1}
 
@@ -67,6 +75,25 @@ clone "${ATF_REPO}" "${ATF_BRANCH}" "${ATF_DIR}"
 
 echo ">>> building U-Boot (${UBOOT_DEFCONFIG})"
 make -C "${UBOOT_DIR}" "${UBOOT_DEFCONFIG}"
+
+if [ -n "${UBOOT_ENV_FILE}" ]; then
+	# The defconfig compiles frank-w's Linux boot menu (uEnv_r64.txt) in as
+	# the default environment and selects CONFIG_ENV_IS_NOWHERE=y, so the
+	# board cannot be taught to boot FreeBSD with setenv + saveenv: there is
+	# nowhere to save it.  Replace the environment at build time instead.
+	echo ">>> default U-Boot environment: ${UBOOT_ENV_FILE}"
+	test -f "${UBOOT_ENV_FILE}"
+	cp "${UBOOT_ENV_FILE}" "${UBOOT_DIR}/uEnv_freebsd.txt"
+	sed -i '/^CONFIG_ENV_DEFAULT_ENV_TEXT_FILE=/d' "${UBOOT_DIR}/.config"
+	echo 'CONFIG_ENV_DEFAULT_ENV_TEXT_FILE="uEnv_freebsd.txt"' \
+	    >> "${UBOOT_DIR}/.config"
+	make -C "${UBOOT_DIR}" olddefconfig
+	# olddefconfig silently drops values whose dependencies are unmet.
+	grep -q '^CONFIG_ENV_DEFAULT_ENV_TEXT_FILE="uEnv_freebsd.txt"$' \
+	    "${UBOOT_DIR}/.config" || \
+	    { echo "$0: U-Boot kept its own default environment" >&2; exit 1; }
+fi
+
 make -C "${UBOOT_DIR}" -j"${NPROC}" all tools
 test -f "${UBOOT_DIR}/u-boot.bin"
 test -x "${UBOOT_DIR}/tools/mkimage"
@@ -88,6 +115,7 @@ cp "${UBOOT_DIR}/tools/mkimage" "${OUTDIR}/mkimage"
 
 cat > "${OUTDIR}/VERSIONS" <<VEOF
 u-boot: ${UBOOT_REPO} ${UBOOT_BRANCH} $(git -C "${UBOOT_DIR}" rev-parse HEAD) ${UBOOT_DEFCONFIG}
+env:    ${UBOOT_ENV_FILE:-(stock uEnv_r64.txt)}
 atf:    ${ATF_REPO} ${ATF_BRANCH} $(git -C "${ATF_DIR}" rev-parse HEAD) PLAT=${ATF_PLAT} BOOT_DEVICE=${BOOT_DEVICE} ${ATF_EXTRA_FLAGS}
 VEOF
 

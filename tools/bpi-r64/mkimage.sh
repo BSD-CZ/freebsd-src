@@ -20,7 +20,10 @@
 #   LBA    1..  33  GPT header + entries
 #   LBA 1024        bl2.img  (raw, 512 KiB, DEVICE_HEADER_OFFSET=0x80000)
 #   LBA 2048..6143  p1 "fip"       fip.bin (BL31 + U-Boot), 2 MiB
-#   LBA 6144..7167  p2 "ubootenv"  U-Boot environment (0x300000), 512 KiB
+#   LBA 6144..7167  p2 "ubootenv"  U-Boot environment slot (0x300000),
+#                                 512 KiB; reserved for layout
+#                                 compatibility, unused by a U-Boot
+#                                 built with CONFIG_ENV_IS_NOWHERE
 #   LBA 8192..      p3 "efi"       FAT16 ESP: EFI/BOOT/BOOTAA64.EFI + dtb/
 #   next 1 MiB      p4 "rootfs"    UFS2 root (grown to the card on first boot)
 #

@@ -20,7 +20,7 @@ use for `sdmmc`:
 | LBA 1-33          | GPT                                       |
 | LBA 1024 (512 KiB)| `bl2.img` (raw, no partition)             |
 | LBA 2048 (1 MiB)  | p1 `fip`: `fip.bin` (BL31 + U-Boot)       |
-| LBA 6144 (3 MiB)  | p2 `ubootenv`: U-Boot environment         |
+| LBA 6144 (3 MiB)  | p2 `ubootenv`: reserved, see Booting       |
 | LBA 8192 (4 MiB)  | p3 `efi`: FAT16 ESP, loader + `dtb/`      |
 | next MiB          | p4 `rootfs`: UFS2, grown on first boot    |
 
@@ -111,18 +111,28 @@ shorten the kernel step pass `modules`, e.g.
 
 ## Booting
 
-frank-w's U-Boot has `CONFIG_EFI_LOADER`; its default `bootcmd` looks for a
-Linux kernel, so point it at the FreeBSD loader once and save it:
+The card boots all the way to FreeBSD on its own: U-Boot loads
+`EFI/BOOT/BOOTAA64.EFI` from the ESP with the in-tree
+`mt7622-bananapi-bpi-r64.dtb` (falling back to U-Boot's own device tree),
+and the loader boots the kernel off the UFS root.  Press a key during the
+two-second `bootdelay` for the `BPI-R64>` prompt.
 
-```
-setenv bootcmd 'load mmc 0:3 ${loadaddr} EFI/BOOT/BOOTAA64.EFI; bootefi ${loadaddr} ${fdtcontroladdr}'
-saveenv
-```
+That comes from `uEnv_freebsd.txt`, which `build-firmware.sh` compiles into
+`u-boot.bin` as the default environment.  It has to be done at build time:
+`mt7622_bpi-r64_defconfig` selects `CONFIG_ENV_IS_NOWHERE=y`, so the board
+has no saved environment and `saveenv` cannot create one -- a `bootcmd` set
+at the prompt only lasts until the next reset, and the `ubootenv` partition
+is reserved by the layout but unused by this build.  Stock frank-w U-Boot
+boots its Linux menu (`uEnv_r64.txt`), which looks for a `uImage` under
+`bananapi/bpi-r64/linux` and finds nothing on a FreeBSD card.
 
-The loader takes the DTB U-Boot passes via EFI.  To use the in-tree
-`mt7622-bananapi-bpi-r64.dtb` instead, load it in U-Boot first
-(`load mmc 0:3 ${fdt_addr_r} dtb/mediatek/mt7622-bananapi-bpi-r64.dtb` and
-pass `${fdt_addr_r}` to `bootefi`).
+To boot something else, edit `tools/bpi-r64/uEnv_freebsd.txt` and rebuild
+the firmware, point `UBOOT_ENV_FILE` at another file, or keep frank-w's
+environment with an empty one:
+
+```sh
+UBOOT_ENV_FILE= ./tools/bpi-r64/build-firmware.sh -o ../firmware -w ../firmware-src
+```
 
 The image has no users besides `root` (empty password, console login
 only); `sshd` is enabled but refuses root, so set a password and add a
