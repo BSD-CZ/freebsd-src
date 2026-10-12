@@ -95,15 +95,20 @@ take `bl2.img` / `fip.bin` from a frank-w `bpi-r64_sdmmc.img.gz`.
 
 ## GitHub Actions
 
-`.github/workflows/bpi-r64-image.yml` runs on every push to
-`max-support-mediatek-7622-bananapir64` and on demand (`workflow_dispatch`,
-inputs: `ref`, `kernconf`, `root_size`, `modules`).  Two jobs:
+`.github/workflows/bpi-r64-image.yml` runs on every push to `main` and on
+demand (`workflow_dispatch`, inputs: `ref`, `kernconf`, `root_size`,
+`modules`).  Three jobs:
 
 * `firmware` (a few minutes): `build-firmware.sh`, uploads `bl2.img`,
   `fip.bin`, `u-boot.bin`, `VERSIONS`.
 * `image` (up to 6 h, `timeout-minutes: 360`): buildworld, buildkernel
   `MEDIATEK`, NO_ROOT install, `mkimage.sh`, uploads
   `bpi-r64-freebsd-MEDIATEK-<sha>.img.xz` + `SHA256`.
+* `release` (push builds of `main` only): publishes the image as a GitHub
+  release `bpi-r64-<date>-<sha>`, marked latest.  Next to the versioned file
+  it attaches `bpi-r64-freebsd-MEDIATEK.img.xz`, so this URL always serves
+  the newest image and can be linked from a web page:
+  `https://github.com/BSD-CZ/freebsd-src/releases/latest/download/bpi-r64-freebsd-MEDIATEK.img.xz`
 
 Artifacts live under the workflow run (Actions -> run -> Artifacts).  To
 shorten the kernel step pass `modules`, e.g.

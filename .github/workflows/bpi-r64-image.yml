@@ -161,3 +161,50 @@ jobs:
           path: out/
           if-no-files-found: error
           compression-level: 0
+
+  # Publish every push build of main as a GitHub release, so the image has a
+  # public, permanent download URL (workflow artifacts need a GitHub login
+  # and expire).  The image is also attached under a fixed name, which makes
+  #   https://github.com/<repo>/releases/latest/download/bpi-r64-freebsd-MEDIATEK.img.xz
+  # always point at the newest build.  Manual (workflow_dispatch) runs, which
+  # may use another kernconf or root size, are not released.
+  release:
+    name: publish GitHub release
+    needs: image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bpi-r64-freebsd-*
+          merge-multiple: true
+          path: out
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd out
+          SHA=$(echo "$GITHUB_SHA" | cut -c1-9)
+          IMG=$(ls bpi-r64-freebsd-"$KERNCONF"-*.img.xz)
+          cp "$IMG" "bpi-r64-freebsd-$KERNCONF.img.xz"
+          sha256sum *.img.xz > SHA256
+          TAG="bpi-r64-$(date -u +%Y%m%d)-$SHA"
+          cat > notes.md <<NOTES
+          FreeBSD/arm64 SD card image for the Banana Pi BPI-R64 (MediaTek MT7622),
+          kernel \`$KERNCONF\`, built from $GITHUB_SHA.
+
+          The image already contains the boot firmware (ATF BL2 + FIP with U-Boot);
+          versions are in \`FIRMWARE_VERSIONS\`.  Write it to an SD card with:
+
+              xz -dc bpi-r64-freebsd-$KERNCONF.img.xz | sudo dd of=/dev/sdX bs=1M conv=fsync
+
+          Build log: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID
+          NOTES
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --latest \
+            --title "BPI-R64 FreeBSD $(date -u +%Y-%m-%d) ($SHA)" \
+            --notes-file notes.md \
+            "$IMG" "bpi-r64-freebsd-$KERNCONF.img.xz" SHA256 FIRMWARE_VERSIONS
